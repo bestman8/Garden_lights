@@ -5,10 +5,23 @@ use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::task::block_on;
 use esp_idf_svc::timer::{EspAsyncTimer, EspTimerService};
 
+#[toml_cfg::toml_config]
+pub struct Config {
+    #[default("")]
+    wifi_ssid: &'static str,
+    #[default("")]
+    password: &'static str,
+}
+
 // use tokio::{sleep, spawn, Duration};
 fn main() {
     esp_idf_hal::sys::link_patches();
     let peripherals = Peripherals::take().unwrap();
+    let app_config = CONFIG;
+    println!(
+        "wifi ssid: {}, wifi password: {}",
+        app_config.wifi_ssid, app_config.password
+    );
 
     block_on(run(peripherals))
 }
