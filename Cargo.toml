@@ -39,7 +39,7 @@ smol = "*"
 futures-lite = "2.5.0"
 postcard = "1.1.1"
 serde = "1.0.217"
-time = {version ="0.3.37", features = ["serde"]}
+time = {version ="0.3.37", features = ["serde","formatting" ]}
 [build-dependencies]
 embuild = "0.32.0"
 cc = "=1.1.30"     # Necessary until a new version of `esp-idf-sys` is released

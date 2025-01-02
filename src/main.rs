@@ -16,7 +16,7 @@ use esp_idf_svc::{
     wifi::{AsyncWifi, EspWifi},
 };
 use futures_lite::StreamExt;
-use std::io::Write;
+use std::{io::Write, time::Duration};
 
 use log::info;
 
@@ -38,6 +38,12 @@ fn main() {
     esp_idf_hal::sys::link_patches();
     EspLogger::initialize_default();
 
+    let config = esp_idf_svc::sys::esp_vfs_eventfd_config_t {
+        max_fds: 5,
+        ..Default::default()
+    };
+    esp_idf_svc::sys::esp! { unsafe { esp_idf_svc::sys::esp_vfs_eventfd_register(&config) } }.unwrap();
+
     let peripherals = Peripherals::take().unwrap();
     let modem = peripherals.modem;
     let pins: Pins = peripherals.pins;
@@ -45,11 +51,11 @@ fn main() {
     let sys_loop = EspSystemEventLoop::take().unwrap();
 
     let nvs = EspDefaultNvsPartition::take().unwrap();
-    let storage = nvs.clone();
+    // let storage = nvs.clone();
 
     let _wifi: AsyncWifi<EspWifi<'_>> = AsyncWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs)).unwrap(), sys_loop, timer).unwrap();
     // let test_storage = "test";
-    let mut nsv_ds = EspNvs::new(storage, "test", true).unwrap();
+    // let mut nsv_ds = EspNvs::new(storage, "test", true).unwrap();
     // {
     //     let key_raw_struct_data = StructToBeStored {
     //         some_bytes: &[1, 2, 3, 4],
@@ -63,10 +69,12 @@ fn main() {
     //         .unwrap();
     // }
     println!("something from the stack");
-    println!(
-        "{:?}",
-        postcard::from_bytes::<StructToBeStored>(nsv_ds.get_raw("test1", &mut [0; 100]).unwrap().unwrap()).unwrap()
-    );
+    let _sntp = esp_idf_svc::sntp::EspSntp::new_default().unwrap();
+
+    // println!(
+    //     "{:?}",
+    //     postcard::from_bytes::<StructToBeStored>(nsv_ds.get_raw("test1", &mut [0; 100]).unwrap().unwrap()).unwrap()
+    // );
     // println!("{}", nvs_ds.get_i16());
     // let _wifi: esp_idf_svc::wifi::EspWifi<'_> = wifi::wifi_create(&sys_loop, &nvs, modem).unwrap();
     // // let (mut mqtt_client, mut mqtt_connection) = handled_mqtt_create(0);
@@ -105,7 +113,20 @@ async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
         wifi_loop.do_connect_loop().await;
     })
     .detach();
-
+    // std::thread::sleep(Duration::from_secs(2));
+    // std::thread::sleep(Duration::from_secs(2));
+    smol::Timer::after(Duration::from_secs(40));
+    println!("current time: {:?}", std::time::SystemTime::now());
+    // std::thread::sleep(Duration::from_secs(5));
+    println!("current time: {:?}", std::time::SystemTime::now());
+    // ex.spawn(async {
+    //     loop {
+    //         // let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
+    //         // let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
+    //         smol::Timer::after(core::time::Duration::from_secs_f32(15.0)).await;
+    //     }
+    // })
+    // .detach();
     ex.run(async move { futures_lite::stream::iter(handles).then(|f| f).collect::<Vec<_>>().await })
         .await;
 }
@@ -116,6 +137,8 @@ async fn led_blink_async_2(relay_number: u8, pin: esp_idf_hal::gpio::AnyOutputPi
 
     let mut timer = EspTimerService::new().unwrap().timer_async().unwrap();
     loop {
+        println!("current time: {:?}", std::time::SystemTime::now());
+
         test.set_high().unwrap();
         timer.after(Duration::from_secs_f32(duration_in_sec)).await.unwrap();
         test.set_low().unwrap();
