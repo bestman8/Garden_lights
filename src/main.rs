@@ -4,11 +4,21 @@ mod mqtt;
 mod relay;
 mod wifi;
 
+use embedded_svc::wifi::Wifi;
 // use embedded_svc::mqtt::client::asynch::Client;
 use esp_idf_hal::{gpio::*, peripherals::Peripherals, task::block_on};
-use esp_idf_svc::{eventloop::EspSystemEventLoop, fs, nvs::*, timer::EspTimerService};
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    fs,
+    log::EspLogger,
+    nvs::*,
+    timer::EspTimerService,
+    wifi::{AsyncWifi, EspWifi},
+};
 use futures_lite::StreamExt;
 use std::io::Write;
+
+use log::info;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -26,16 +36,20 @@ pub struct Config {
 // use tokio::{sleep, spawn, Duration};
 fn main() {
     esp_idf_hal::sys::link_patches();
+    EspLogger::initialize_default();
+
     let peripherals = Peripherals::take().unwrap();
     let modem = peripherals.modem;
     let pins: Pins = peripherals.pins;
+    let timer = EspTimerService::new().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
 
-    let sys_loop: esp_idf_svc::eventloop::EspEventLoop<esp_idf_svc::eventloop::System> = EspSystemEventLoop::take().unwrap();
     let nvs = EspDefaultNvsPartition::take().unwrap();
-    // let nsv_testpartition = EspCustomNvsPartition::take("my_data").unwrap();
+    let storage = nvs.clone();
 
+    let _wifi: AsyncWifi<EspWifi<'_>> = AsyncWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs)).unwrap(), sys_loop, timer).unwrap();
     // let test_storage = "test";
-    let mut nsv_ds = EspNvs::new(nvs, "test", true).unwrap();
+    let mut nsv_ds = EspNvs::new(storage, "test", true).unwrap();
     // {
     //     let key_raw_struct_data = StructToBeStored {
     //         some_bytes: &[1, 2, 3, 4],
@@ -48,7 +62,6 @@ fn main() {
     //         .set_raw("test1", &to_vec::<StructToBeStored, 100>(&key_raw_struct_data).unwrap())
     //         .unwrap();
     // }
-
     println!("something from the stack");
     println!(
         "{:?}",
@@ -61,7 +74,8 @@ fn main() {
     let app_config = CONFIG;
     println!("wifi ssid: {}, wifi password: {}", app_config.wifi_ssid, app_config.password);
 
-    // block_on(run(pins))
+    let ex = smol::LocalExecutor::new();
+    block_on(run(pins, _wifi))
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -70,17 +84,28 @@ struct StructToBeStored<'a> {
     a_str: &'a str,
     a_number: i16,
 }
-async fn run(pins: Pins) {
+async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
     let ex = smol::LocalExecutor::new();
+
     let futures = vec![
         led_blink_async_2(0, pins.gpio25.into(), 0.5),
-        led_blink_async_2(1, pins.gpio21.into(), 5.0),
-        led_blink_async_2(2, pins.gpio19.into(), 7.0),
-        led_blink_async_2(3, pins.gpio18.into(), 10.0),
-        led_blink_async_2(4, pins.gpio5.into(), 15f32),
+        // led_blink_async_2(1, pins.gpio21.into(), 5.0),
+        // led_blink_async_2(2, pins.gpio19.into(), 7.0),
+        // led_blink_async_2(3, pins.gpio18.into(), 10.0),
+        // led_blink_async_2(4, pins.gpio5.into(), 15f32),
     ];
+
     let mut handles = vec![];
     ex.spawn_many(futures, &mut handles);
+
+    let mut wifi_loop: wifi::wifi_loop<'_> = wifi::wifi_loop { wifi };
+    // wifi_loop.configure().await.unwrap();
+    ex.spawn(async move {
+        wifi_loop.configure().await.unwrap();
+        wifi_loop.do_connect_loop().await;
+    })
+    .detach();
+
     ex.run(async move { futures_lite::stream::iter(handles).then(|f| f).collect::<Vec<_>>().await })
         .await;
 }
