@@ -1,3 +1,4 @@
+// #![feature(const_refs_to_cell)]
 mod mqtt;
 mod relay;
 mod wifi;
@@ -10,11 +11,7 @@ use esp_idf_svc::{
     timer::EspTimerService,
     wifi::{AsyncWifi, EspWifi},
 };
-use futures_lite::{FutureExt, StreamExt};
-use smol::future::poll_fn;
-use std::time::Duration;
-
-use log::info;
+use futures_lite::StreamExt;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -28,6 +25,10 @@ pub struct Config {
     #[default("")]
     mqtt_client_id: &'static str,
 }
+// struct SharedData {
+//     pins: esp_idf_hal::gpio::Pins,
+//     ledc: esp_idf_hal::ledc::LEDC,
+// }
 
 // use tokio::{sleep, spawn, Duration};
 fn main() {
@@ -42,6 +43,10 @@ fn main() {
     let pins: Pins = peripherals.pins;
     let timer = EspTimerService::new().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
+    // let shared_data = shared_data {
+    //     pins: peripherals.pins,
+    //     ledc: peripherals.ledc,
+    // };
 
     let nvs = EspDefaultNvsPartition::take().unwrap();
     // let storage = nvs.clone();
@@ -125,12 +130,12 @@ async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
 }
 
 async fn async_wifi_task(wifi: AsyncWifi<EspWifi<'_>>) {
-    let mut wifi_loop: wifi::wifi_loop<'_> = wifi::wifi_loop { wifi };
+    let mut wifi_loop: wifi::WifiLoop<'_> = wifi::WifiLoop { wifi };
     wifi_loop.configure().await.unwrap();
     wifi_loop.do_connect_loop().await;
 }
 
-async fn led_blink_async_2(relay_number: u8, pin: esp_idf_hal::gpio::AnyOutputPin, duration_in_sec: f32) {
+async fn led_blink_async_2(_relay_number: u8, pin: esp_idf_hal::gpio::AnyOutputPin, duration_in_sec: f32) {
     use core::time::Duration;
     let mut led = PinDriver::output(pin).unwrap();
 
