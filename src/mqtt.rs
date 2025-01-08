@@ -1,61 +1,10 @@
-use esp_idf_hal::sys::esp_netif_is_netif_up;
 use esp_idf_svc::{mqtt::client::*, sys::EspError};
 
-// pub fn mqtt_create(url: &str, client_id: &str) -> Result<MqttStruct, EspError> {
-//     let (mqtt_client, mqtt_conn) = EspAsyncMqttClient::new(
-//         url,
-//         &MqttClientConfiguration {
-//             client_id: Some(client_id),
-//             ..Default::default()
-//         },
-//     )?;
-
-//     Ok(MqttStruct {
-//         client: mqtt_client,
-//         connection: mqtt_conn,
-//     })
-// }
-
-// pub struct MqttStruct {
-//     client: EspAsyncMqttClient,
-//     connection: EspAsyncMqttConnection,
-// }
-// impl MqttStruct {
-//     pub async fn run(&mut self, topic: &str) {
-//         let ex = smol::LocalExecutor::new();
-
-//         println!("mqtt started");
-//         ex.spawn(async {
-//             loop {
-//                 while let Ok(event) = self.connection.next().await {
-//                     println!("got: {}", event.payload());
-//                 }
-//             }
-//         })
-//         .detach();
-
-//         self.client
-//             .publish(topic, QoS::AtMostOnce, false, "does this work from the esp32".as_bytes())
-//             .await
-//             .unwrap();
-//         ex.spawn(async {
-//             loop {
-//                 // if esp_idf_svc::netif::EspNetif::
-//                 if let Err(_e) = self.client.subscribe(topic, QoS::AtLeastOnce).await {
-//                     println!("retrying in 10 sec");
-//                     std::thread::sleep(core::time::Duration::from_secs(10)).await;
-//                 }
-//             }
-//         })
-//         .detach();
-//     }
-// }
+use crate::{relay, CONFIG};
 use core::time::Duration;
 use log::*;
-use std::thread;
-
-pub fn run(client: &mut EspMqttClient<'_>, connection: &mut EspMqttConnection) -> Result<(), EspError> {
-    let topic = "program";
+pub fn run(client: &mut EspMqttClient<'_>, connection: &mut EspMqttConnection, sender: smol::channel::Sender<relay::Relay>) -> Result<(), EspError> {
+    let topic = &CONFIG.mqtt_topic;
 
     std::thread::scope(|s| {
         info!("About to start the MQTT client");
@@ -67,14 +16,20 @@ pub fn run(client: &mut EspMqttClient<'_>, connection: &mut EspMqttConnection) -
         //
         // Note also that if you go to http://tools.emqx.io/ and then connect and send a message to topic
         // "esp-mqtt-demo", the client configured here should receive it.
-        let mut connected = false;
+        // let mut connected = false;
         std::thread::Builder::new()
             .stack_size(6000)
             .spawn_scoped(s, move || {
                 info!("MQTT Listening for messages");
-
                 while let Ok(event) = connection.next() {
                     info!("[Queue] Event: {}", event.payload());
+                    if let Ok(relay_struct) = postcard::from_bytes(event.payload().to_string().as_bytes()) {
+                        if smol::block_on(sender.send(relay_struct)).is_ok() {
+                            info!("send to channel")
+                        };
+                    } else {
+                        error!("cannot parse struct");
+                    }
                 }
 
                 info!("Connection closed");
@@ -82,20 +37,20 @@ pub fn run(client: &mut EspMqttClient<'_>, connection: &mut EspMqttConnection) -
             .unwrap();
 
         loop {
-            if !connected {
-                if let Err(e) = client.subscribe(topic, QoS::AtMostOnce) {
-                    error!(
-                        "Failed to subscribe to topic \"{topic}\": {e}, retrying..., actual esp_error number {:?}",
-                        e
-                    );
-                    std::thread::sleep(Duration::from_secs(1));
-                    continue;
-                } else {
-                    info!("Subscribed to topic \"{topic}\"");
-                    connected = true;
-                    // println!("fsdfs");
-                }
+            // if !connected {
+            if let Err(e) = client.subscribe(topic, QoS::AtMostOnce) {
+                error!(
+                    "Failed to subscribe to topic \"{topic}\": {e}, retrying..., actual esp_error number {:?}",
+                    e
+                );
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
             }
+            // else {
+            //     info!("Subscribed to topic \"{topic}\"");
+            //     connected = true;
+            // }
+            // }
 
             // Just to give a chance of our connection to get even the first published message
             std::thread::sleep(Duration::from_secs(1));
@@ -103,16 +58,17 @@ pub fn run(client: &mut EspMqttClient<'_>, connection: &mut EspMqttConnection) -
 
             let payload = "Hello from esp-mqtt-demo!";
 
-            // loop {
-            //     client.enqueue(topic, QoS::AtMostOnce, false, payload.as_bytes())?;
+            loop {
+                client.enqueue(topic, QoS::AtLeastOnce, true, payload.as_bytes())?;
+                // client.enqueue(topic, QoS::AtMostOnce, false, payload.as_bytes())?;
 
-            //     info!("Published \"{payload}\" to topic \"{topic}\"");
+                info!("Published \"{payload}\" to topic \"{topic}\"");
 
-            //     let sleep_secs = 2;
+                let sleep_secs = 10;
 
-            //     info!("Now sleeping for {sleep_secs}s...");
-            //     std::thread::sleep(Duration::from_secs(sleep_secs));
-            // }
+                info!("Now sleeping for {sleep_secs}s...");
+                std::thread::sleep(Duration::from_secs(sleep_secs));
+            }
         }
     })
 }
@@ -122,6 +78,9 @@ pub fn mqtt_create(url: &str, client_id: &str) -> Result<(EspMqttClient<'static>
         url,
         &MqttClientConfiguration {
             client_id: Some(client_id),
+            disable_clean_session: false,
+
+            // protocol_version: esp_idf_svc::mqtt::client::MqttProtocolVersion::,
             ..Default::default()
         },
     )?;

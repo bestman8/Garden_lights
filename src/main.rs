@@ -3,7 +3,7 @@ mod mqtt;
 mod relay;
 mod wifi;
 
-use std::thread;
+use std::{default, thread};
 
 use esp_idf_hal::{gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{
@@ -26,6 +26,8 @@ pub struct Config {
     mqtt_url: &'static str,
     #[default("")]
     mqtt_client_id: &'static str,
+    #[default("")]
+    mqtt_topic: &'static str,
 }
 // struct SharedData {
 //     pins: esp_idf_hal::gpio::Pins,
@@ -92,18 +94,19 @@ struct StructToBeStored<'a> {
     a_number: i16,
 }
 async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
-    let ex = smol::LocalExecutor::new();
+    let ex: smol::LocalExecutor<'_> = smol::LocalExecutor::new();
+    let (sender, reciever) = smol::channel::unbounded();
+    // let futures = vec![
+    //     led_blink_async_2(0, pins.gpio25.into(), 0.5),
+    //     // led_blink_async_2(1, pins.gpio21.into(), 5.0),
+    //     // led_blink_async_2(3, pins.gpio18.into(), 10.0),
+    //     // led_blink_async_2(4, pins.gpio5.into(), 15f32),
+    //     // led_blink_async_2(2, pins.gpio19.into(), 7.0),
+    // ];
+    // let mut handles = vec![];
+    // ex.spawn_many(futures, &mut handles);
 
-    let futures = vec![
-        led_blink_async_2(0, pins.gpio25.into(), 0.5),
-        // led_blink_async_2(1, pins.gpio21.into(), 5.0),
-        // led_blink_async_2(3, pins.gpio18.into(), 10.0),
-        // led_blink_async_2(4, pins.gpio5.into(), 15f32),
-        // led_blink_async_2(2, pins.gpio19.into(), 7.0),
-    ];
-    let mut handles = vec![];
-    ex.spawn_many(futures, &mut handles);
-
+    ex.spawn(relay::relay_controller_func(pins, reciever)).detach();
     ex.spawn(async_wifi_task(wifi)).detach();
     ex.spawn(async {
         loop {
@@ -116,7 +119,7 @@ async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
     .detach();
     // let mut mqtt = mqtt::mqtt_create(&CONFIG.mqtt_url, &CONFIG.mqtt_client_id).unwrap();
     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
-    std::thread::spawn(move || mqtt::run(&mut client, &mut conn).unwrap());
+    std::thread::spawn(move || mqtt::run(&mut client, &mut conn, sender).unwrap());
     // ex.spawn(async {
     //     smol::Timer::after(core::time::Duration::from_secs_f32(10.0)).await;
 
@@ -125,8 +128,10 @@ async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
     // })
     // .detach();
 
-    ex.run(async move { futures_lite::stream::iter(handles).then(|f| f).collect::<Vec<_>>().await })
-        .await;
+    smol::Timer::never().await;
+    println!("THIS HAPPENS AFTER NEVER");
+    // ex.run(async move { futures_lite::stream::iter(handles).then(|f| f).collect::<Vec<_>>().await })
+    //     .await;
 }
 
 async fn async_wifi_task(wifi: AsyncWifi<EspWifi<'_>>) {
