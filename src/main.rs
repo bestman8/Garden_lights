@@ -3,6 +3,8 @@ mod mqtt;
 mod relay;
 mod wifi;
 
+use std::thread;
+
 use esp_idf_hal::{gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -99,32 +101,30 @@ async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
         // led_blink_async_2(4, pins.gpio5.into(), 15f32),
         // led_blink_async_2(2, pins.gpio19.into(), 7.0),
     ];
-    // let futurefds = async_wifi_task(wifi);
     let mut handles = vec![];
     ex.spawn_many(futures, &mut handles);
 
-    // ex.spawn_many(vec![futurefds], &mut handles);
     ex.spawn(async_wifi_task(wifi)).detach();
-    // let test = futures_lite::future::zip(futures, async_wifi_task(wifi));
-
-    // // wifi_loop.configure().await.unwrap();
-    // let test2 = async move {
-    //     async_wifi_task(wifi).await;
-    // };
-
     ex.spawn(async {
         loop {
-            println!("current time: {:?}", std::time::SystemTime::now());
-            // let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
-            // let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
+            let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
+            let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
+            println!("current time: {:?}", current_time);
             smol::Timer::after(core::time::Duration::from_secs_f32(30.0)).await;
         }
     })
     .detach();
-    // ex.spawn_many(vec![test1], &mut handles);
+    // let mut mqtt = mqtt::mqtt_create(&CONFIG.mqtt_url, &CONFIG.mqtt_client_id).unwrap();
+    let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
+    std::thread::spawn(move || mqtt::run(&mut client, &mut conn).unwrap());
+    // ex.spawn(async {
+    //     smol::Timer::after(core::time::Duration::from_secs_f32(10.0)).await;
 
-    // ex.run(test1);
-    // ex.run(test2);
+    //     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
+    //     mqtt::run(&mut client, &mut conn).unwrap()
+    // })
+    // .detach();
+
     ex.run(async move { futures_lite::stream::iter(handles).then(|f| f).collect::<Vec<_>>().await })
         .await;
 }
@@ -141,7 +141,7 @@ async fn led_blink_async_2(_relay_number: u8, pin: esp_idf_hal::gpio::AnyOutputP
 
     let mut timer = EspTimerService::new().unwrap().timer_async().unwrap();
     loop {
-        println!("current_time utc: {:?}", std::time::SystemTime::now());
+        // println!("current_time utc: {:?}", std::time::SystemTime::now());
         led.set_high().unwrap();
         timer.after(Duration::from_secs_f32(duration_in_sec)).await.unwrap();
         led.set_low().unwrap();
