@@ -82,20 +82,20 @@ pub fn run(client: &mut EspMqttClient<'_>, connection: &mut EspMqttConnection) -
             .unwrap();
 
         loop {
-            // if !connected {
-            if let Err(e) = client.subscribe(topic, QoS::AtMostOnce) {
-                error!(
-                    "Failed to subscribe to topic \"{topic}\": {e}, retrying..., actual esp_error number {:?}",
-                    e
-                );
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
-            } else {
-                info!("Subscribed to topic \"{topic}\"");
-                connected = true;
-                // println!("fsdfs");
+            if !connected {
+                if let Err(e) = client.subscribe(topic, QoS::AtMostOnce) {
+                    error!(
+                        "Failed to subscribe to topic \"{topic}\": {e}, retrying..., actual esp_error number {:?}",
+                        e
+                    );
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                } else {
+                    info!("Subscribed to topic \"{topic}\"");
+                    connected = true;
+                    // println!("fsdfs");
+                }
             }
-            // }
 
             // Just to give a chance of our connection to get even the first published message
             std::thread::sleep(Duration::from_secs(1));
