@@ -3,8 +3,6 @@ mod mqtt;
 mod relay;
 mod wifi;
 
-use std::{default, thread};
-
 use esp_idf_hal::{gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -13,7 +11,6 @@ use esp_idf_svc::{
     timer::EspTimerService,
     wifi::{AsyncWifi, EspWifi},
 };
-use futures_lite::StreamExt;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -53,10 +50,10 @@ fn main() {
     // };
 
     let nvs = EspDefaultNvsPartition::take().unwrap();
-    // let storage = nvs.clone();
+    let nvs_clone = nvs.clone();
     let _wifi: AsyncWifi<EspWifi<'_>> = AsyncWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs)).unwrap(), sys_loop, timer).unwrap();
     // let test_storage = "test";
-    // let mut nsv_ds = EspNvs::new(storage, "test", true).unwrap();
+    // let mut nsv_ds: EspNvs<NvsDefault> = EspNvs::new(nvs_clone, "test", true).unwrap();
     // {
     //     let key_raw_struct_data = StructToBeStored {
     //         some_bytes: &[1, 2, 3, 4],
@@ -84,7 +81,8 @@ fn main() {
 
     // let ex = smol::LocalExecutor::new();
     let _sntp = esp_idf_svc::sntp::EspSntp::new_default();
-    futures_lite::future::block_on(run(pins, _wifi));
+    let usedstorage = esp_idf_svc::nvs::EspNvs::new(nvs_clone, "relays", true).unwrap();
+    futures_lite::future::block_on(run(usedstorage, pins, _wifi));
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -93,20 +91,11 @@ struct StructToBeStored<'a> {
     a_str: &'a str,
     a_number: i16,
 }
-async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
+async fn run(nvs: esp_idf_svc::nvs::EspNvs<esp_idf_svc::nvs::NvsDefault>, pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
     let ex: smol::LocalExecutor<'_> = smol::LocalExecutor::new();
     let (sender, reciever) = smol::channel::unbounded();
-    // let futures = vec![
-    //     led_blink_async_2(0, pins.gpio25.into(), 0.5),
-    //     // led_blink_async_2(1, pins.gpio21.into(), 5.0),
-    //     // led_blink_async_2(3, pins.gpio18.into(), 10.0),
-    //     // led_blink_async_2(4, pins.gpio5.into(), 15f32),
-    //     // led_blink_async_2(2, pins.gpio19.into(), 7.0),
-    // ];
-    // let mut handles = vec![];
-    // ex.spawn_many(futures, &mut handles);
+    ex.spawn(relay::relay_controller_func(nvs, pins, reciever)).detach();
 
-    ex.spawn(relay::relay_controller_func(pins, reciever)).detach();
     ex.spawn(async_wifi_task(wifi)).detach();
     ex.spawn(async {
         loop {
@@ -117,21 +106,11 @@ async fn run(pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
         }
     })
     .detach();
-    // let mut mqtt = mqtt::mqtt_create(&CONFIG.mqtt_url, &CONFIG.mqtt_client_id).unwrap();
     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
     std::thread::spawn(move || mqtt::run(&mut client, &mut conn, sender).unwrap());
-    // ex.spawn(async {
-    //     smol::Timer::after(core::time::Duration::from_secs_f32(10.0)).await;
-
-    //     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
-    //     mqtt::run(&mut client, &mut conn).unwrap()
-    // })
-    // .detach();
 
     smol::Timer::never().await;
     println!("THIS HAPPENS AFTER NEVER");
-    // ex.run(async move { futures_lite::stream::iter(handles).then(|f| f).collect::<Vec<_>>().await })
-    //     .await;
 }
 
 async fn async_wifi_task(wifi: AsyncWifi<EspWifi<'_>>) {
@@ -140,7 +119,7 @@ async fn async_wifi_task(wifi: AsyncWifi<EspWifi<'_>>) {
     wifi_loop.do_connect_loop().await;
 }
 
-async fn led_blink_async_2(_relay_number: u8, pin: esp_idf_hal::gpio::AnyOutputPin, duration_in_sec: f32) {
+async fn _led_blink_async_2(_relay_number: u8, pin: esp_idf_hal::gpio::AnyOutputPin, duration_in_sec: f32) {
     use core::time::Duration;
     let mut led = PinDriver::output(pin).unwrap();
 
