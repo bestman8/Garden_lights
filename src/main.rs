@@ -36,12 +36,12 @@ fn main() {
     esp_idf_hal::sys::link_patches();
     EspLogger::initialize_default();
 
-    let config = esp_idf_svc::sys::esp_vfs_eventfd_config_t { max_fds: 5 };
+    let config = esp_idf_svc::sys::esp_vfs_eventfd_config_t { max_fds: 15 };
     esp_idf_svc::sys::esp! { unsafe { esp_idf_svc::sys::esp_vfs_eventfd_register(&config) } }.unwrap();
 
     let peripherals = Peripherals::take().unwrap();
     let modem = peripherals.modem;
-    let pins: Pins = peripherals.pins;
+    let pins = peripherals.pins;
     let timer = EspTimerService::new().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
     // let shared_data = shared_data {
@@ -91,21 +91,19 @@ struct StructToBeStored<'a> {
     a_str: &'a str,
     a_number: i16,
 }
-async fn run(nvs: esp_idf_svc::nvs::EspNvs<esp_idf_svc::nvs::NvsDefault>, pins: Pins, wifi: AsyncWifi<EspWifi<'_>>) {
+async fn run(nvs: esp_idf_svc::nvs::EspNvs<esp_idf_svc::nvs::NvsDefault>, pins: Pins, wifi: AsyncWifi<EspWifi<'static>>) {
     let ex: smol::LocalExecutor<'_> = smol::LocalExecutor::new();
     let (sender, reciever) = smol::channel::unbounded();
-    ex.spawn(relay::relay_controller_func(nvs, pins, reciever)).detach();
+    // ex.spawn(relay::relay_controller_func(nvs, pins, reciever)).detach();
+    std::thread::spawn(|| relay::relay_controller_func(nvs, pins, reciever));
 
-    ex.spawn(async_wifi_task(wifi)).detach();
-    ex.spawn(async {
-        loop {
-            let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
-            let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
-            println!("current time: {:?}", current_time);
-            smol::Timer::after(core::time::Duration::from_secs_f32(30.0)).await;
-        }
-    })
-    .detach();
+    std::thread::spawn(|| esp_idf_hal::task::block_on(async_wifi_task(wifi)));
+    std::thread::spawn(|| loop {
+        let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
+        let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
+        println!("current time: {:?}", current_time);
+        std::thread::sleep(core::time::Duration::from_secs_f32(30.0));
+    });
     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
     std::thread::spawn(move || mqtt::run(&mut client, &mut conn, sender).unwrap());
 

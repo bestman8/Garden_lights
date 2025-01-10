@@ -1,5 +1,2 @@
-imports_granularity = "Crate"
-group_imports = "Preserve"
-fn_single_line = false
 max_width = 150
 reorder_impl_items = true

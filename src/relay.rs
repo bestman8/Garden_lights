@@ -1,29 +1,39 @@
-use chrono::Weekday;
 use esp_idf_hal::gpio::AnyOutputPin;
+use esp_idf_hal::gpio::PinDriver;
+use esp_idf_hal::task::block_on;
 use esp_idf_svc::nvs;
-use log::{error, log, warn};
-use time::{convert::Week, Time};
+use log::{info, log, warn};
 
-use crate::relay;
-// #[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 pub struct Relays {
-    relay_1: RelayWithPin,
-    relay_2: RelayWithPin,
-    relay_3: RelayWithPin,
-    relay_4: RelayWithPin,
-    status_led: RelayWithPin,
+    relay_1: Relay,
+    relay_2: Relay,
+    relay_3: Relay,
+    relay_4: Relay,
+    status_led: Relay,
 }
 
 impl Relays {
-    async fn update(&mut self, reciever: smol::channel::Receiver<Relay>) {
+    pub fn init(nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) -> Relays {
+        Relays {
+            relay_1: Relay::init(RelayNumber::Relay1, nvs),
+            relay_2: Relay::init(RelayNumber::Relay2, nvs),
+            relay_3: Relay::init(RelayNumber::Relay3, nvs),
+            relay_4: Relay::init(RelayNumber::Relay4, nvs),
+            status_led: Relay::init(RelayNumber::StatusLed, nvs),
+        }
+    }
+
+    async fn update(&mut self, reciever: &smol::channel::Receiver<Relay>) {
         use RelayNumber::*;
+        info!("from update");
         if let Ok(obtained_relay) = reciever.recv().await {
             match obtained_relay.number {
-                Relay1 => self.relay_1.custom_from(obtained_relay),
-                Relay2 => self.relay_2.custom_from(obtained_relay),
-                Relay3 => self.relay_3.custom_from(obtained_relay),
-                Relay4 => self.relay_4.custom_from(obtained_relay),
-                StatusLed => self.status_led.custom_from(obtained_relay),
+                Relay1 => self.relay_1 = obtained_relay,
+                Relay2 => self.relay_2 = obtained_relay,
+                Relay3 => self.relay_3 = obtained_relay,
+                Relay4 => self.relay_4 = obtained_relay,
+                StatusLed => self.status_led = obtained_relay,
                 _ => {
                     warn!("this shouldn't exist")
                 }
@@ -31,30 +41,60 @@ impl Relays {
         }
     }
 
-    pub fn init(
-        relay_1_pin: AnyOutputPin,
-        relay_2_pin: AnyOutputPin,
-        relay_3_pin: AnyOutputPin,
-        relay_4_pin: AnyOutputPin,
-        status_led_pin: AnyOutputPin,
-        nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>,
-    ) -> Relays {
-        let relay_1 = Relay::init(RelayNumber::Relay1, nvs);
-        let relay_2 = Relay::init(RelayNumber::Relay2, nvs);
-        let relay_3 = Relay::init(RelayNumber::Relay3, nvs);
-        let relay_4 = Relay::init(RelayNumber::Relay4, nvs);
-        let status_led = Relay::init(RelayNumber::StatusLed, nvs);
+    fn do_stuff(data: Relay) {
+        info!("inside do stuff");
+        // todo!();
+        // fn return_pin_for_relay
 
-        Relays {
-            relay_1: relay_1.to_relay_with_pin(relay_1_pin),
-            relay_2: relay_2.to_relay_with_pin(relay_2_pin),
-            relay_3: relay_3.to_relay_with_pin(relay_3_pin),
-            relay_4: relay_4.to_relay_with_pin(relay_4_pin),
-            status_led: status_led.to_relay_with_pin(status_led_pin),
+        let pin: AnyOutputPin = unsafe { AnyOutputPin::new(data.get_pin_i32()) };
+        let mut pindriver = PinDriver::output(pin).unwrap();
+
+        info!("after pin driver creation");
+        loop {
+            pindriver.set_high().unwrap();
+            std::thread::sleep(core::time::Duration::from_secs(5));
+            pindriver.set_low().unwrap();
+            std::thread::sleep(core::time::Duration::from_secs(5));
+        }
+    }
+
+    async fn run(mut self, reciever: smol::channel::Receiver<Relay>, nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) {
+        println!("inside the run fn");
+        println!("inside the run fn");
+
+        // std::
+
+        // let arc_mutex: std::sync::Arc<std::sync::Mutex<Relays>> = std::sync::Arc::new(std::sync::Mutex::new(self));
+
+        let rw_mutex = std::sync::Arc::new(std::sync::RwLock::new(self));
+        macro_rules! create_threads {
+            ($($relay:ident)+) => {
+                $(
+                    let rw_reader_clone_relay = rw_mutex.clone();
+                    std::thread::spawn(move || {
+                        let data = rw_reader_clone_relay.read().unwrap().$relay;
+                        // info!("right before do_stuff gets called");
+                        Relays::do_stuff(data);
+                    });
+                )*
+            };
+        }
+        create_threads!(relay_1 relay_2 relay_3 relay_4 status_led);
+
+        std::thread::sleep(core::time::Duration::from_secs(10));
+        let rw_writer_clone = rw_mutex.clone();
+        std::thread::spawn(move || {
+            let mut data = rw_writer_clone.write().unwrap();
+            esp_idf_hal::task::block_on(Relays::update(&mut *data, &reciever));
+        });
+
+        loop {
+            info!("BEFORE NEVER");
+            smol::Timer::never().await;
+            log::error!("AFTER NEVER");
         }
     }
 }
-
 impl RelayWithPin {
     fn custom_from(&mut self, relay: Relay) {
         self.condition = relay.condition;
@@ -63,7 +103,7 @@ impl RelayWithPin {
         self.exclude_times = relay.exclude_times;
     }
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 pub struct Relay {
     number: RelayNumber,
     condition: Condition,
@@ -74,16 +114,18 @@ pub struct Relay {
 impl Relay {
     fn new(number: RelayNumber) -> Relay {
         // use time::{Month, Weekday};?
+
+        info!("relay created");
         Relay {
-            number: number,
             condition: Condition::Time(None),
+            number: number,
             days_off_the_week: DaysOffTheWeek::all(),
             operating_months: Month::all(),
             exclude_times: None,
         }
     }
 
-    pub fn init(number: RelayNumber, nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) -> Relay {
+    fn init(number: RelayNumber, nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) -> Relay {
         let name = match number {
             RelayNumber::Relay1 => "Relay1",
             RelayNumber::Relay2 => "Relay2",
@@ -93,9 +135,9 @@ impl Relay {
         };
         match nvs.get_raw(name, &mut [0; 512]) {
             Ok(bytes) => {
-                match postcard::from_bytes(bytes.unwrap()) {
-                    Ok(fdks) => {
-                        return fdks;
+                match postcard::from_bytes(bytes.unwrap_or(&[0, 0])) {
+                    Ok(relay) => {
+                        return relay;
                     }
                     Err(_) => {
                         return Relay::new(number);
@@ -106,24 +148,17 @@ impl Relay {
                 return Relay::new(number);
             }
         };
+        // return Relay::new(number);
     }
 
-    fn get_from_storage() {}
-
-    fn set_to_storage() {}
-
-    fn to_relay_with_pin(self, pin: esp_idf_hal::gpio::AnyOutputPin) -> RelayWithPin {
-        RelayWithPin {
-            relay: pin,
-            condition: self.condition,
-            days_off_the_week: self.days_off_the_week,
-            operating_months: self.operating_months,
-            exclude_times: self.exclude_times,
+    fn get_pin_i32(&self) -> i32 {
+        match self.number {
+            RelayNumber::Relay1 => 21,
+            RelayNumber::Relay2 => 19,
+            RelayNumber::Relay3 => 18,
+            RelayNumber::Relay4 => 5,
+            RelayNumber::StatusLed => 25,
         }
-    }
-
-    fn from_storage() {
-        todo!()
     }
 }
 
@@ -200,7 +235,7 @@ struct RelayWithPin {
     exclude_times: Option<[TimeOfDay; 2]>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 enum RelayNumber {
     Relay1,
     Relay2,
@@ -210,7 +245,6 @@ enum RelayNumber {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
-
 struct LightAmount {
     greater_or_less: bool,
     value: u32,
@@ -229,18 +263,14 @@ enum Condition {
     LightAmountTimeLimited(u32, Option<[TimeOfDay; 2]>),
 }
 
-pub async fn relay_controller_func(
+pub fn relay_controller_func(
     nvs: esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>,
     pins: esp_idf_hal::gpio::Pins,
     reciever: smol::channel::Receiver<Relay>,
 ) {
-    let mut relays = Relays::init(
-        pins.gpio21.into(),
-        pins.gpio19.into(),
-        pins.gpio18.into(),
-        pins.gpio2.into(),
-        pins.gpio25.into(),
-        &nvs,
-    );
-    relays.update(reciever).await;
+    let mut relays = Relays::init(&nvs);
+    info!("left the Relays::init");
+
+    block_on(relays.run(reciever, &nvs));
+    // relays.update(reciever).await;
 }
