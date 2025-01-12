@@ -1,9 +1,13 @@
 use crate::sensor;
+use chrono::Timelike;
 use esp_idf_hal::gpio::AnyOutputPin;
 use esp_idf_hal::gpio::PinDriver;
 use esp_idf_hal::task::block_on;
 use esp_idf_svc::nvs;
+use log::error;
 use log::{info, log, warn};
+use serde::de::IntoDeserializer;
+use time::Time;
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 pub struct Relays {
     relay_1: Relay,
@@ -41,20 +45,73 @@ impl Relays {
         }
     }
 
-    fn do_stuff(data: Relay) {
+    fn do_stuff(data: Relay) -> bool {
         info!("inside do stuff");
+        use core::time::Duration;
+        use std::thread::sleep;
         // todo!();
         // fn return_pin_for_relay
+        let start_data = data.clone(); //we clone here on purpose because we're compareing it later
 
         let pin: AnyOutputPin = unsafe { AnyOutputPin::new(data.get_pin_i32()) };
         let mut pindriver = PinDriver::output(pin).unwrap();
-
-        info!("after pin driver creation");
+        let mut started = false;
         loop {
-            pindriver.set_high().unwrap();
-            std::thread::sleep(core::time::Duration::from_secs(10));
-            pindriver.set_low().unwrap();
-            std::thread::sleep(core::time::Duration::from_secs(10));
+            if start_data != data {
+                return true;
+            }
+
+            let time_zone = chrono_tz::Europe::Amsterdam;
+            let time_now = chrono::Utc::now().with_timezone(&time_zone);
+            let current_time = TimeOfDay {
+                hour: time_now.hour().try_into().unwrap(),
+                minute: time_now.minute().try_into().unwrap(),
+                second: time_now.second().try_into().unwrap(),
+            };
+
+            match data.condition {
+                Condition::Time(times) => {
+                    if let Some(times) = times {
+                        let time_start: TimeOfDay = times[0];
+                        let time_end: TimeOfDay = times[1];
+
+                        if !started {
+                            if current_time.correct_difference(time_start) < current_time.correct_difference(time_end)
+                                || current_time.correct_difference(time_start) < (5 * 60)
+                            {
+                                started = true;
+                            } else {
+                                sleep(Duration::from_secs(4 * 60));
+                                continue;
+                            }
+                        }
+                        // pindriver.set_level(level)
+
+                        macro_rules! handle_pin {
+                            ($high_low:ident, $start_or_end:expr, $bool:expr ) => {
+                                if current_time.correct_difference($start_or_end) < 4 * 60 {
+                                    sleep(Duration::from_secs(
+                                        current_time.correct_difference($start_or_end).into(),
+                                    ));
+                                    started = $bool;
+                                    if let Err(error) = pindriver.$high_low() {
+                                        error!("some error in do stuff occured when changing the pin {}", error)
+                                    };
+                                    continue;
+                                } else {
+                                    sleep(Duration::from_secs(5 * 60));
+                                }
+                            };
+                        }
+                        handle_pin!(set_high, time_start, true);
+                        handle_pin!(set_low, time_end, false);
+                    } else {
+                        sleep(Duration::from_secs(5 * 60));
+                    }
+                }
+                Condition::LightAmount(light_amount) => todo!(),
+                Condition::LightAmountTimeLimited(light_amount, times) => todo!(),
+            }
         }
     }
 
@@ -67,14 +124,17 @@ impl Relays {
         // let arc_mutex: std::sync::Arc<std::sync::Mutex<Relays>> = std::sync::Arc::new(std::sync::Mutex::new(self));
         std::thread::spawn(|| sensor::setup_sensor(1));
 
-        let rw_mutex = std::sync::Arc::new(std::sync::RwLock::new(self));
+        let shared_data = std::sync::Arc::new(std::sync::RwLock::new(self));
         macro_rules! create_threads {
             ($($relay:ident)+) => {
                 $(
-                    let rw_reader_clone_relay = rw_mutex.clone();
+                    let rw_reader_clone_relay = shared_data.clone();
                     std::thread::spawn(move || {
-                        let data = rw_reader_clone_relay.read().unwrap().$relay;
-                        Relays::do_stuff(data);
+                        loop{
+                            let data = rw_reader_clone_relay.read().unwrap().$relay;
+
+                            let _ = Relays::do_stuff(data);
+                        }
                     });
                 )*
             };
@@ -83,7 +143,7 @@ impl Relays {
         // create_threads!(status_led);
 
         std::thread::sleep(core::time::Duration::from_secs(10));
-        let rw_writer_clone = rw_mutex.clone();
+        let rw_writer_clone = shared_data.clone();
         std::thread::spawn(move || {
             let mut data = rw_writer_clone.write().unwrap();
             esp_idf_hal::task::block_on(Relays::update(&mut *data, &reciever));
@@ -96,15 +156,8 @@ impl Relays {
         }
     }
 }
-impl RelayWithPin {
-    fn custom_from(&mut self, relay: Relay) {
-        self.condition = relay.condition;
-        self.days_off_the_week = relay.days_off_the_week;
-        self.operating_months = relay.operating_months;
-        self.exclude_times = relay.exclude_times;
-    }
-}
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 pub struct Relay {
     number: RelayNumber,
     condition: Condition,
@@ -163,7 +216,7 @@ impl Relay {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 struct Month {
     jan: bool,
     feb: bool,
@@ -197,7 +250,7 @@ impl Month {
         }
     }
 }
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 struct DaysOffTheWeek {
     mon: bool,
     tue: bool,
@@ -222,21 +275,35 @@ impl DaysOffTheWeek {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 struct TimeOfDay {
-    hour: u32,
-    minute: u32,
-    second: u32,
+    hour: u8,
+    minute: u8,
+    second: u8,
 }
-struct RelayWithPin {
-    relay: AnyOutputPin,
-    condition: Condition,
-    days_off_the_week: DaysOffTheWeek,
-    operating_months: Month,
-    exclude_times: Option<[TimeOfDay; 2]>,
-}
+impl TimeOfDay {
+    fn correct_difference(&self, time1: TimeOfDay) -> u32 {
+        let secs_self = self.to_sec();
+        let mut sec_time_other = time1.to_sec();
+        if secs_self > sec_time_other {
+            sec_time_other += 86400;
+        }
+        sec_time_other - secs_self
+    }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+    fn to_sec(&self) -> u32 {
+        u32::from(self.hour) * 3600 + u32::from(self.minute) * 60 + u32::from(self.second)
+    }
+
+    fn from_sec(secs: u32) -> TimeOfDay {
+        TimeOfDay {
+            hour: (secs / 3600).try_into().unwrap(),
+            minute: ((secs % 3600) / 60).try_into().unwrap(),
+            second: (secs % 60).try_into().unwrap(),
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 enum RelayNumber {
     Relay1,
     Relay2,
@@ -245,13 +312,13 @@ enum RelayNumber {
     StatusLed,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 struct LightAmount {
     greater_or_less: bool,
     value: u32,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 ///with time it just means that it is on between those times
 ///
 /// with light amount it just means that it is on when the light amount > or <
