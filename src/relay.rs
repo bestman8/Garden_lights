@@ -1,9 +1,9 @@
+use crate::sensor;
 use esp_idf_hal::gpio::AnyOutputPin;
 use esp_idf_hal::gpio::PinDriver;
 use esp_idf_hal::task::block_on;
 use esp_idf_svc::nvs;
 use log::{info, log, warn};
-
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 pub struct Relays {
     relay_1: Relay,
@@ -52,9 +52,9 @@ impl Relays {
         info!("after pin driver creation");
         loop {
             pindriver.set_high().unwrap();
-            std::thread::sleep(core::time::Duration::from_secs(5));
+            std::thread::sleep(core::time::Duration::from_secs(10));
             pindriver.set_low().unwrap();
-            std::thread::sleep(core::time::Duration::from_secs(5));
+            std::thread::sleep(core::time::Duration::from_secs(10));
         }
     }
 
@@ -65,6 +65,7 @@ impl Relays {
         // std::
 
         // let arc_mutex: std::sync::Arc<std::sync::Mutex<Relays>> = std::sync::Arc::new(std::sync::Mutex::new(self));
+        std::thread::spawn(|| sensor::setup_sensor(1));
 
         let rw_mutex = std::sync::Arc::new(std::sync::RwLock::new(self));
         macro_rules! create_threads {
@@ -73,13 +74,13 @@ impl Relays {
                     let rw_reader_clone_relay = rw_mutex.clone();
                     std::thread::spawn(move || {
                         let data = rw_reader_clone_relay.read().unwrap().$relay;
-                        // info!("right before do_stuff gets called");
                         Relays::do_stuff(data);
                     });
                 )*
             };
         }
         create_threads!(relay_1 relay_2 relay_3 relay_4 status_led);
+        // create_threads!(status_led);
 
         std::thread::sleep(core::time::Duration::from_secs(10));
         let rw_writer_clone = rw_mutex.clone();

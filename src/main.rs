@@ -1,6 +1,7 @@
 // #![feature(const_refs_to_cell)]
 mod mqtt;
 mod relay;
+mod sensor;
 mod wifi;
 
 use esp_idf_hal::{gpio::*, peripherals::Peripherals};
