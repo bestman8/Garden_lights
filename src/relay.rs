@@ -89,7 +89,7 @@ impl Relays {
 
                         macro_rules! handle_pin {
                             ($high_low:ident, $start_or_end:expr, $bool:expr ) => {
-                                if current_time.correct_difference($start_or_end) < 4 * 60 {
+                                if current_time.correct_difference($start_or_end) < 4 * 60 { //r0: should be>r1
                                     sleep(Duration::from_secs(
                                         current_time.correct_difference($start_or_end).into(),
                                     ));
@@ -99,7 +99,7 @@ impl Relays {
                                     };
                                     continue;
                                 } else {
-                                    sleep(Duration::from_secs(5 * 60));
+                                    sleep(Duration::from_secs(5 * 60)); //r1: should be<r0
                                 }
                             };
                         }
