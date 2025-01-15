@@ -1,4 +1,5 @@
 use crate::sensor;
+use chrono::Datelike;
 use chrono::Timelike;
 use esp_idf_hal::gpio::AnyOutputPin;
 use esp_idf_hal::gpio::PinDriver;
@@ -6,8 +7,7 @@ use esp_idf_hal::task::block_on;
 use esp_idf_svc::nvs;
 use log::error;
 use log::{info, log, warn};
-use serde::de::IntoDeserializer;
-use time::Time;
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 pub struct Relays {
     relay_1: Relay,
@@ -30,36 +30,40 @@ impl Relays {
 
     async fn update(&mut self, reciever: &smol::channel::Receiver<Relay>) {
         use RelayNumber::*;
-        info!("from update");
-        if let Ok(obtained_relay) = reciever.recv().await {
-            match obtained_relay.number {
-                Relay1 => self.relay_1 = obtained_relay,
-                Relay2 => self.relay_2 = obtained_relay,
-                Relay3 => self.relay_3 = obtained_relay,
-                Relay4 => self.relay_4 = obtained_relay,
-                StatusLed => self.status_led = obtained_relay,
-                _ => {
-                    warn!("this shouldn't exist")
+        loop {
+            info!("from update");
+            if let Ok(obtained_relay) = reciever.recv().await {
+                match obtained_relay.number {
+                    Relay1 => self.relay_1 = obtained_relay,
+                    Relay2 => self.relay_2 = obtained_relay,
+                    Relay3 => self.relay_3 = obtained_relay,
+                    Relay4 => self.relay_4 = obtained_relay,
+                    StatusLed => self.status_led = obtained_relay,
+                    _ => {
+                        warn!("this shouldn't exist")
+                    }
                 }
             }
         }
     }
 
-    fn do_stuff(data: Relay) -> bool {
+    fn do_stuff(data: &Relay) -> bool {
         info!("inside do stuff");
         use core::time::Duration;
         use std::thread::sleep;
         // todo!();
         // fn return_pin_for_relay
-        let start_data = data.clone(); //we clone here on purpose because we're compareing it later
+        let start_data = *data; //we clone here on purpose because we're compareing it later
 
         let pin: AnyOutputPin = unsafe { AnyOutputPin::new(data.get_pin_i32()) };
         let mut pindriver = PinDriver::output(pin).unwrap();
         let mut started = false;
         loop {
-            if start_data != data {
+            if start_data != *data {
+                info!("data changed");
                 return true;
             }
+            sleep(Duration::from_secs(10)); //longer makes way more sense for the long term
 
             let time_zone = chrono_tz::Europe::Amsterdam;
             let time_now = chrono::Utc::now().with_timezone(&time_zone);
@@ -68,54 +72,33 @@ impl Relays {
                 minute: time_now.minute().try_into().unwrap(),
                 second: time_now.second().try_into().unwrap(),
             };
+            let current_month = time_now.month();
+            if !data.operating_months.is_current_month(current_month) {
+                continue;
+            }
 
-            match data.condition {
-                Condition::Time(times) => {
-                    if let Some(times) = times {
-                        let time_start: TimeOfDay = times[0];
-                        let time_end: TimeOfDay = times[1];
-
-                        if !started {
-                            if current_time.correct_difference(time_start) < current_time.correct_difference(time_end)
-                                || current_time.correct_difference(time_start) < (5 * 60)
-                            {
-                                started = true;
-                            } else {
-                                sleep(Duration::from_secs(4 * 60));
-                                continue;
-                            }
-                        }
-                        // pindriver.set_level(level)
-
-                        macro_rules! handle_pin {
-                            ($high_low:ident, $start_or_end:expr, $bool:expr ) => {
-                                if current_time.correct_difference($start_or_end) < 4 * 60 { //r0: should be>r1
-                                    sleep(Duration::from_secs(
-                                        current_time.correct_difference($start_or_end).into(),
-                                    ));
-                                    started = $bool;
-                                    if let Err(error) = pindriver.$high_low() {
-                                        error!("some error in do stuff occured when changing the pin {}", error)
-                                    };
-                                    continue;
-                                } else {
-                                    sleep(Duration::from_secs(5 * 60)); //r1: should be<r0
-                                }
-                            };
-                        }
-                        handle_pin!(set_high, time_start, true);
-                        handle_pin!(set_low, time_end, false);
-                    } else {
-                        sleep(Duration::from_secs(5 * 60));
-                    }
+            let day = time_now.day();
+            if !data.days_off_the_week.is_current_day(day) {
+                continue;
+            }
+            if let Some(exclude_times) = data.exclude_times {
+                if !exclude_times.on_or_off(current_time) {
+                    continue;
                 }
-                Condition::LightAmount(light_amount) => todo!(),
-                Condition::LightAmountTimeLimited(light_amount, times) => todo!(),
+            }
+
+            match data.condition.on_or_off(current_time) {
+                true => {
+                    let _ = pindriver.set_high();
+                }
+                false => {
+                    let _ = pindriver.set_low();
+                }
             }
         }
     }
 
-    async fn run(mut self, reciever: smol::channel::Receiver<Relay>, nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) {
+    async fn run(&self, reciever: smol::channel::Receiver<Relay>, nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) {
         println!("inside the run fn");
         println!("inside the run fn");
 
@@ -124,7 +107,7 @@ impl Relays {
         // let arc_mutex: std::sync::Arc<std::sync::Mutex<Relays>> = std::sync::Arc::new(std::sync::Mutex::new(self));
         std::thread::spawn(|| sensor::setup_sensor(1));
 
-        let shared_data = std::sync::Arc::new(std::sync::RwLock::new(self));
+        let shared_data = std::sync::Arc::new(std::sync::RwLock::new(*self));
         macro_rules! create_threads {
             ($($relay:ident)+) => {
                 $(
@@ -133,7 +116,7 @@ impl Relays {
                         loop{
                             let data = rw_reader_clone_relay.read().unwrap().$relay;
 
-                            let _ = Relays::do_stuff(data);
+                            let _ = Relays::do_stuff(&data);
                         }
                     });
                 )*
@@ -163,7 +146,7 @@ pub struct Relay {
     condition: Condition,
     days_off_the_week: DaysOffTheWeek,
     operating_months: Month,
-    exclude_times: Option<[TimeOfDay; 2]>,
+    exclude_times: Option<Times>,
 }
 impl Relay {
     fn new(number: RelayNumber) -> Relay {
@@ -249,6 +232,24 @@ impl Month {
             dec: true,
         }
     }
+
+    fn is_current_month(&self, current_month: u32) -> bool {
+        match current_month {
+            1 => self.jan,
+            2 => self.feb,
+            3 => self.mar,
+            4 => self.apr,
+            5 => self.may,
+            6 => self.jun,
+            7 => self.jul,
+            8 => self.aug,
+            9 => self.sep,
+            10 => self.oct,
+            11 => self.nov,
+            12 => self.dec,
+            _ => false,
+        }
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 struct DaysOffTheWeek {
@@ -271,6 +272,19 @@ impl DaysOffTheWeek {
             fri: true,
             sat: true,
             sun: true,
+        }
+    }
+
+    fn is_current_day(&self, other_day: u32) -> bool {
+        match other_day {
+            1 => self.mon,
+            2 => self.tue,
+            3 => self.wed,
+            4 => self.thu,
+            5 => self.fri,
+            6 => self.sat,
+            7 => self.sun,
+            _ => false,
         }
     }
 }
@@ -317,6 +331,11 @@ struct LightAmount {
     greater_or_less: bool,
     value: u32,
 }
+impl LightAmount {
+    fn on_or_off(&self, current_time: TimeOfDay) -> bool {
+        todo!()
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
 ///with time it just means that it is on between those times
@@ -326,9 +345,49 @@ struct LightAmount {
 ///
 /// light amount limited is exaclty the same but only limited to those times
 enum Condition {
-    Time(Option<[TimeOfDay; 2]>),
+    Time(Option<Option<Times>>),
     LightAmount(LightAmount),
-    LightAmountTimeLimited(u32, Option<[TimeOfDay; 2]>),
+    LightAmountTimeLimited(LightAmount, Times),
+}
+impl Condition {
+    fn on_or_off(&self, current_time: TimeOfDay) -> bool {
+        // *started = false;
+        match self {
+            Condition::Time(option_times) => {
+                if let Some(times) = option_times {
+                    if let Some(on_or_off) = times {
+                        on_or_off.on_or_off(current_time)
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            Condition::LightAmount(light_amount) => light_amount.on_or_off(current_time),
+            Condition::LightAmountTimeLimited(light_amount, times) => light_amount.on_or_off(current_time) && times.on_or_off(current_time),
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+struct Times {
+    start_time: TimeOfDay,
+    end_time: TimeOfDay,
+}
+impl Times {
+    fn on_or_off(&self, current_time: TimeOfDay) -> bool {
+        let mut secs_current_time = current_time.to_sec();
+        let secs_time_start = self.start_time.to_sec();
+        let mut secs_end_time = self.end_time.to_sec();
+        if secs_time_start > secs_end_time && secs_current_time < secs_end_time {
+            secs_current_time += 86400;
+        }
+        if secs_time_start > secs_end_time {
+            secs_end_time += 86400
+        }
+        secs_time_start < secs_current_time && secs_current_time < secs_end_time
+    }
 }
 
 pub fn relay_controller_func(

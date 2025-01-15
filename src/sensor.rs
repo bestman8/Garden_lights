@@ -4,9 +4,9 @@ use esp_idf_hal::{
 };
 
 // pub fn setup_sensor(channl: smol::channel::Sender<u16>) {
-pub fn setup_sensor(pin: i32) {
+pub fn setup_sensor(_pin: i32) {
     let thing = unsafe { esp_idf_hal::adc::ADC1::new() };
-    let mut adc = AdcDriver::new(thing).unwrap();
+    let adc = AdcDriver::new(thing).unwrap();
     let mut adc_pin = AdcChannelDriver::new(
         &adc,
         unsafe { esp_idf_hal::gpio::Gpio34::new() },

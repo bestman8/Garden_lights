@@ -93,12 +93,13 @@ struct StructToBeStored<'a> {
     a_number: i16,
 }
 async fn run(nvs: esp_idf_svc::nvs::EspNvs<esp_idf_svc::nvs::NvsDefault>, pins: Pins, wifi: AsyncWifi<EspWifi<'static>>) {
-    let ex: smol::LocalExecutor<'_> = smol::LocalExecutor::new();
+    // let ex: smol::LocalExecutor<'_> = smol::LocalExecutor::new();
     let (sender, reciever) = smol::channel::unbounded();
     // ex.spawn(relay::relay_controller_func(nvs, pins, reciever)).detach();
     std::thread::spawn(|| relay::relay_controller_func(nvs, pins, reciever));
 
-    std::thread::spawn(|| esp_idf_hal::task::block_on(async_wifi_task(wifi)));
+    // std::thread::spawn(|| esp_idf_hal::task::block_on(async_wifi_task(wifi)));
+    smol::spawn(async_wifi_task(wifi)).detach();
     std::thread::spawn(|| loop {
         let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
         let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
