@@ -1,10 +1,12 @@
-// #![feature(const_refs_to_cell)]
+#![feature(get_mut_unchecked)]
 mod mqtt;
 mod relay;
 mod sensor;
 mod wifi;
 
-use esp_idf_hal::{gpio::*, peripherals::Peripherals};
+use std::time::Duration;
+
+use esp_idf_hal::{gpio::*, peripherals::Peripherals, task::thread};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     log::EspLogger,
@@ -93,22 +95,29 @@ struct StructToBeStored<'a> {
     a_number: i16,
 }
 async fn run(nvs: esp_idf_svc::nvs::EspNvs<esp_idf_svc::nvs::NvsDefault>, pins: Pins, wifi: AsyncWifi<EspWifi<'static>>) {
-    // let ex: smol::LocalExecutor<'_> = smol::LocalExecutor::new();
+    let ex = smol::LocalExecutor::new();
     let (sender, reciever) = smol::channel::unbounded();
-    // ex.spawn(relay::relay_controller_func(nvs, pins, reciever)).detach();
-    std::thread::spawn(|| relay::relay_controller_func(nvs, pins, reciever));
-
-    // std::thread::spawn(|| esp_idf_hal::task::block_on(async_wifi_task(wifi)));
-    smol::spawn(async_wifi_task(wifi)).detach();
-    std::thread::spawn(|| loop {
-        let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
-        let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
-        println!("current time: {:?}", current_time);
-        std::thread::sleep(core::time::Duration::from_secs_f32(30.0));
-    });
+    std::thread::spawn(|| esp_idf_hal::task::block_on(async_wifi_task(wifi)));
     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
     std::thread::spawn(move || mqtt::run(&mut client, &mut conn, sender).unwrap());
+    std::thread::sleep(Duration::from_secs(60));
+    std::thread::spawn(|| relay::relay_controller_func(nvs, pins, reciever));
+    // std::thread::spawn(|| loop {
+    //     let time_format = time::format_description::parse("[hour]:[minute]:[second]").unwrap();
+    //     let current_time = time::OffsetDateTime::now_utc().format(&time_format).unwrap();
+    //     println!("current time: {:?}", current_time);
+    //     std::thread::sleep(core::time::Duration::from_secs_f32(30.0));
+    // });
 
+    // ex.spawn(relay::relay_controller_func(nvs, pins, reciever)).detach();
+    // std::thread::spawn(|| relay::relay_controller_func(nvs, pins, reciever));
+
+    // ex.spawn(async_wifi_task(wifi)).detach();
+    // std::thread::spawn(|| {
+    //     let (mut client, mut conn) = mqtt::async_mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
+
+    //     esp_idf_hal::task::block_on(mqtt::async_run(&mut client, &mut conn, sender));
+    // });
     smol::Timer::never().await;
     println!("THIS HAPPENS AFTER NEVER");
 }

@@ -1,14 +1,21 @@
+use std::rc::Rc;
+use std::time::Duration;
+
+use crate::async_wifi_task;
 use crate::sensor;
 use chrono::Datelike;
 use chrono::Timelike;
 use esp_idf_hal::gpio::AnyOutputPin;
 use esp_idf_hal::gpio::PinDriver;
+use esp_idf_hal::sys::esp_alloc_failed_hook_t;
 use esp_idf_hal::task::block_on;
 use esp_idf_svc::nvs;
 use log::error;
 use log::{info, log, warn};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
 pub struct Relays {
     relay_1: Relay,
     relay_2: Relay,
@@ -28,119 +35,175 @@ impl Relays {
         }
     }
 
-    async fn update(&mut self, reciever: &smol::channel::Receiver<Relay>) {
-        use RelayNumber::*;
-        loop {
-            info!("from update");
-            if let Ok(obtained_relay) = reciever.recv().await {
-                match obtained_relay.number {
-                    Relay1 => self.relay_1 = obtained_relay,
-                    Relay2 => self.relay_2 = obtained_relay,
-                    Relay3 => self.relay_3 = obtained_relay,
-                    Relay4 => self.relay_4 = obtained_relay,
-                    StatusLed => self.status_led = obtained_relay,
-                    _ => {
-                        warn!("this shouldn't exist")
-                    }
-                }
-            }
-        }
-    }
+    // async fn update(mut self, reciever: &std::sync::mpsc::Receiver<Relay>) {
+    //     use RelayNumber::*;
+    //     loop {
+    //         info!("from update");
+    //         if let Ok(obtained_relay) = reciever.recv() {
+    //             println!("from update receved {:?}", obtained_relay);
+    //             match obtained_relay.number {
+    //                 Relay1 => self.relay_1 = obtained_relay,
+    //                 Relay2 => self.relay_2 = obtained_relay,
+    //                 Relay3 => self.relay_3 = obtained_relay,
+    //                 Relay4 => self.relay_4 = obtained_relay,
+    //                 StatusLed => self.status_led = obtained_relay,
+    //                 _ => {
+    //                     warn!("nothing recieved yet idk how this works");
+    //                     std::thread::sleep(Duration::from_secs(10));
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
-    fn do_stuff(data: &Relay) -> bool {
-        info!("inside do stuff");
-        use core::time::Duration;
-        use std::thread::sleep;
-        // todo!();
-        // fn return_pin_for_relay
-        let start_data = *data; //we clone here on purpose because we're compareing it later
-
-        let pin: AnyOutputPin = unsafe { AnyOutputPin::new(data.get_pin_i32()) };
-        let mut pindriver = PinDriver::output(pin).unwrap();
-        let mut started = false;
-        loop {
-            if start_data != *data {
-                info!("data changed");
-                return true;
-            }
-            sleep(Duration::from_secs(10)); //longer makes way more sense for the long term
-
-            let time_zone = chrono_tz::Europe::Amsterdam;
-            let time_now = chrono::Utc::now().with_timezone(&time_zone);
-            let current_time = TimeOfDay {
-                hour: time_now.hour().try_into().unwrap(),
-                minute: time_now.minute().try_into().unwrap(),
-                second: time_now.second().try_into().unwrap(),
-            };
-            let current_month = time_now.month();
-            if !data.operating_months.is_current_month(current_month) {
-                continue;
-            }
-
-            let day = time_now.day();
-            if !data.days_off_the_week.is_current_day(day) {
-                continue;
-            }
-            if let Some(exclude_times) = data.exclude_times {
-                if !exclude_times.on_or_off(current_time) {
-                    continue;
-                }
-            }
-
-            match data.condition.on_or_off(current_time) {
-                true => {
-                    let _ = pindriver.set_high();
-                }
-                false => {
-                    let _ = pindriver.set_low();
-                }
-            }
-        }
-    }
-
-    async fn run(&self, reciever: smol::channel::Receiver<Relay>, nvs: &esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) {
+    fn run<'a>(self, receiver: smol::channel::Receiver<Relay>, nvs: &'a esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>) {
+        let shared_data = Arc::new(Mutex::new(self));
         println!("inside the run fn");
-        println!("inside the run fn");
+        let shared_data_relay_1 = Arc::new(Mutex::new(self.relay_1));
+        let shared_data_relay_2 = Arc::new(Mutex::new(self.relay_2));
+        let shared_data_relay_3 = Arc::new(Mutex::new(self.relay_3));
+        let shared_data_relay_4 = Arc::new(Mutex::new(self.relay_4));
+        let status_led_relay___ = Arc::new(Mutex::new(self.status_led));
 
-        // std::
+        let read_only = shared_data.clone();
+        let writer = shared_data.clone();
 
-        // let arc_mutex: std::sync::Arc<std::sync::Mutex<Relays>> = std::sync::Arc::new(std::sync::Mutex::new(self));
-        std::thread::spawn(|| sensor::setup_sensor(1));
+        let shared_data_relay_1_clone = shared_data_relay_1.clone();
+        let shared_data_relay_2_clone = shared_data_relay_2.clone();
+        let shared_data_relay_3_clone = shared_data_relay_3.clone();
+        let shared_data_relay_4_clone = shared_data_relay_4.clone();
+        let status_led_relay____clone = status_led_relay___.clone();
 
-        let shared_data = std::sync::Arc::new(std::sync::RwLock::new(*self));
-        macro_rules! create_threads {
-            ($($relay:ident)+) => {
-                $(
-                    let rw_reader_clone_relay = shared_data.clone();
-                    std::thread::spawn(move || {
-                        loop{
-                            let data = rw_reader_clone_relay.read().unwrap().$relay;
-
-                            let _ = Relays::do_stuff(&data);
-                        }
-                    });
-                )*
-            };
-        }
-        create_threads!(relay_1 relay_2 relay_3 relay_4 status_led);
-        // create_threads!(status_led);
-
-        std::thread::sleep(core::time::Duration::from_secs(10));
-        let rw_writer_clone = shared_data.clone();
         std::thread::spawn(move || {
-            let mut data = rw_writer_clone.write().unwrap();
-            esp_idf_hal::task::block_on(Relays::update(&mut *data, &reciever));
+            // let shared_data_relay_1_clone = shared_data_relay_1_clone.clone();
+            Relay::do_stuff(shared_data_relay_1_clone, RelayNumber::Relay1)
+        });
+        std::thread::spawn(move || {
+            Relay::do_stuff(shared_data_relay_2_clone, RelayNumber::Relay2);
         });
 
-        loop {
-            info!("BEFORE NEVER");
-            smol::Timer::never().await;
-            log::error!("AFTER NEVER");
-        }
+        std::thread::spawn(move || {
+            Relay::do_stuff(shared_data_relay_3_clone, RelayNumber::Relay3);
+        });
+
+        std::thread::spawn(move || {
+            Relay::do_stuff(shared_data_relay_4_clone, RelayNumber::Relay4);
+        });
+
+        std::thread::spawn(move || {
+            Relay::do_stuff(status_led_relay____clone, RelayNumber::StatusLed);
+        });
+
+        // Spawn a thread for reading and printing the state
+        std::thread::spawn(move || {
+            let read_only = read_only.lock().unwrap();
+            println!("in the read function before looper");
+            loop {
+                println!("{:?}", *read_only);
+                let time_zone = chrono_tz::Europe::Amsterdam;
+                let time_now = chrono::Utc::now().with_timezone(&time_zone);
+                println!("{}", time_now.format("%Y-%m-%d %H:%M:%S").to_string());
+                std::thread::sleep(Duration::from_secs(40));
+            }
+        });
+
+        // Spawn a thread for updating the relays
+        std::thread::spawn(move || {
+            let mut writer = writer.lock().unwrap();
+            block_on(async {
+                println!("waiting for relay updates");
+                loop {
+                    if let Ok(obtained_relay) = receiver.recv().await {
+                        println!("from update received {:?}", obtained_relay);
+                        match obtained_relay.number {
+                            RelayNumber::Relay1 => writer.relay_1 = obtained_relay,
+                            RelayNumber::Relay2 => writer.relay_2 = obtained_relay,
+                            RelayNumber::Relay3 => writer.relay_3 = obtained_relay,
+                            RelayNumber::Relay4 => writer.relay_4 = obtained_relay,
+                            RelayNumber::StatusLed => writer.status_led = obtained_relay,
+                        }
+                    }
+                }
+            });
+        });
+
+        // Keep the main thread alive
+        esp_idf_hal::task::block_on(smol::Timer::never());
     }
+
+    // *data = relay_s;
+    // std::
+
+    // // let arc_mutex: std::sync::Arc<std::sync::Mutex<Relays>> = std::sync::Arc::new(std::sync::Mutex::new(self));
+    // std::thread::spawn(|| sensor::setup_sensor(1));
+
+    // let shared_data = std::sync::Arc::new(std::sync::RwLock::new(*self));
+    // macro_rules! create_threads {
+    //     ($($relay:ident)+) => {
+    //         $(
+    //             let rw_reader_clone_relay = shared_data.clone();
+    //             std::thread::spawn(move || {
+    //                 let mut pin_num:i32 = 0;
+    //                 println!("currently at pin definition");
+    //                 loop{
+    //                     println!("at pindriver");
+    //                     let pin: AnyOutputPin = unsafe { AnyOutputPin::new(pin_num) };
+    //                     let mut pindriver: PinDriver<'_, AnyOutputPin, esp_idf_hal::gpio::Output> = PinDriver::output(pin).unwrap();
+    //                     loop{
+    //                          println!("inner_loop");
+    //                         let data: Relay = rw_reader_clone_relay.read().unwrap().$relay;
+    //                         if pin_num != data.get_pin_i32(){
+    //                             pin_num = data.get_pin_i32();
+    //                             break
+    //                         }
+    //                         std::thread::scope(|s|{
+    //                             s.spawn(||{
+
+    //                                 loop{
+    //                                     if Relays::do_stuff(data){
+    //                                        let _=  pindriver.set_high();
+    //                                     }else{
+    //                                        let _=  pindriver.set_low();
+    //                                     }
+    //                                 }
+    //                             }
+    //                         );
+    //                     }
+    //                 );
+
+    //                     }
+    //                 }
+    //             });
+    //         )*
+    //     };
+    // }
+
+    // create_threads!(relay_1 relay_2 relay_3 relay_4 status_led);
+    // // create_threads!(status_led);
+
+    // std::thread::sleep(core::time::Duration::from_secs(10));
+    // let rw_writer_clone = shared_data.clone();
+    // std::thread::spawn(move || {
+    //     use RelayNumber::*;
+    //     // let mut current_state = *self;
+
+    //     loop {
+    //         let mut data = rw_writer_clone.write().unwrap();
+    //         // esp_idf_hal::task::block_on(Relays::update(&mut *data, &reciever));
+    //         let mut relay_s = *data;
+    //         // let test = relay_1.relay_1;
+    //         info!("from update");
+    //     }
+    // });
+
+    // loop {
+    //     info!("BEFORE NEVER");
+    //     smol::Timer::never().await;
+    //     log::error!("AFTER NEVER");
+    // }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct Relay {
     number: RelayNumber,
     condition: Condition,
@@ -197,9 +260,54 @@ impl Relay {
             RelayNumber::StatusLed => 25,
         }
     }
+
+    fn do_stuff(relay: std::sync::Arc<std::sync::Mutex<Relay>>, relay_number: RelayNumber) {
+        let relay_number: i32 = relay_number.get_pin_i32();
+
+        info!("inside do stuff");
+        let pin: AnyOutputPin = unsafe { AnyOutputPin::new(relay_number) };
+        let mut pindriver: PinDriver<'_, AnyOutputPin, esp_idf_hal::gpio::Output> = PinDriver::output(pin).unwrap();
+        loop {
+            let binding = relay.clone();
+            let relay_clone = binding.lock().unwrap();
+
+            std::thread::sleep(Duration::from_secs(20));
+            let time_zone = chrono_tz::Europe::Amsterdam;
+            let time_now = chrono::Utc::now().with_timezone(&time_zone);
+            let current_time = TimeOfDay {
+                hour: time_now.hour().try_into().unwrap(),
+                minute: time_now.minute().try_into().unwrap(),
+                second: time_now.second().try_into().unwrap(),
+            };
+            let current_month = time_now.month();
+            if !relay_clone.operating_months.is_current_month(current_month) {
+                pindriver.set_low();
+                continue;
+            }
+
+            let day = time_now.day();
+            if !relay_clone.days_off_the_week.is_current_day(day) {
+                pindriver.set_low();
+                continue;
+            }
+            if let Some(exclude_times) = relay_clone.exclude_times {
+                if !exclude_times.on_or_off(current_time) {
+                    pindriver.set_low();
+                    continue;
+                }
+            }
+
+            if relay_clone.condition.on_or_off(current_time) {
+                pindriver.set_high();
+            } else {
+                pindriver.set_low();
+            }
+        }
+        todo!()
+    }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 struct Month {
     jan: bool,
     feb: bool,
@@ -251,7 +359,7 @@ impl Month {
         }
     }
 }
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 struct DaysOffTheWeek {
     mon: bool,
     tue: bool,
@@ -289,7 +397,7 @@ impl DaysOffTheWeek {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 struct TimeOfDay {
     hour: u8,
     minute: u8,
@@ -317,7 +425,7 @@ impl TimeOfDay {
         }
     }
 }
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 enum RelayNumber {
     Relay1,
     Relay2,
@@ -325,8 +433,19 @@ enum RelayNumber {
     Relay4,
     StatusLed,
 }
+impl RelayNumber {
+    fn get_pin_i32(self) -> i32 {
+        match self {
+            RelayNumber::Relay1 => 21,
+            RelayNumber::Relay2 => 19,
+            RelayNumber::Relay3 => 18,
+            RelayNumber::Relay4 => 5,
+            RelayNumber::StatusLed => 25,
+        }
+    }
+}
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 struct LightAmount {
     greater_or_less: bool,
     value: u32,
@@ -337,7 +456,7 @@ impl LightAmount {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 ///with time it just means that it is on between those times
 ///
 /// with light amount it just means that it is on when the light amount > or <
@@ -370,7 +489,7 @@ impl Condition {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 struct Times {
     start_time: TimeOfDay,
     end_time: TimeOfDay,
@@ -393,11 +512,11 @@ impl Times {
 pub fn relay_controller_func(
     nvs: esp_idf_svc::nvs::EspNvs<nvs::NvsDefault>,
     pins: esp_idf_hal::gpio::Pins,
-    reciever: smol::channel::Receiver<Relay>,
+    receiver: smol::channel::Receiver<Relay>,
 ) {
-    let mut relays = Relays::init(&nvs);
-    info!("left the Relays::init");
+    let relays = Arc::new(Mutex::new(Relays::init(&nvs)));
+    info!("Initialized relays");
 
-    block_on(relays.run(reciever, &nvs));
-    // relays.update(reciever).await;
+    let mut relays_locked = relays.lock().unwrap();
+    relays_locked.run(receiver, &nvs);
 }
