@@ -35,13 +35,14 @@ embedded-svc = "0.28.0"
 anyhow = "1"
 # embassy-time-driver = { version = "*", features = ["critical-section"] }esp-idf-hal = { version = "*" }
 # tokio = "*" 
-smol = "*"
-futures-lite = "2.5.0"
+# smol = "*"
+# futures-lite = "2.5.0"
 postcard = "1.1.1"
 serde = "1.0.217"
-time = {version ="0.3.37", features = ["serde","formatting" ]}
+# time = {version ="0.3.37", features = ["serde","formatting" ]}
 chrono-tz = "0.10.0"
 chrono = "0.4.39"
+crossbeam = "0.8.4"
 [build-dependencies]
 embuild = "0.32.0"
 cc = "=1.1.30"     # Necessary until a new version of `esp-idf-sys` is released
