@@ -1,7 +1,9 @@
+// use anyhow::Ok;
 use chrono::{Datelike, Timelike};
 use esp_idf_hal::gpio::{AnyOutputPin, PinDriver};
 use esp_idf_svc::nvs;
 use log::{error, info, log, warn};
+use std::result::Result::Ok;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 
@@ -105,29 +107,18 @@ impl Relay {
 
     fn init(number: RelayNumber, nvs: esp_idf_svc::nvs::EspNvsPartition<esp_idf_svc::nvs::NvsDefault>) -> Relay {
         let name = number.get_name();
-        let mut nvs = match esp_idf_svc::nvs::EspNvs::new(nvs, number.get_name(), true) {
-            Ok(nvs) => nvs,
-            Err(error) => {
-                error!("{}", error);
-                return Relay::new(number);
-            }
+        let nvs = if let Ok(nvs) = esp_idf_svc::nvs::EspNvs::new(nvs, number.get_name(), true) {
+            nvs
+        } else {
+            return Relay::new(number);
         };
-        match nvs.get_raw(name, &mut [0; 128]) {
-            Ok(bytes) => {
-                match postcard::from_bytes(bytes.unwrap_or(&[0, 0])) {
-                    Ok(relay) => {
-                        return relay;
-                    }
-                    Err(_) => {
-                        return Relay::new(number);
-                    }
-                };
+
+        if let Ok(bytes) = nvs.get_raw(name, &mut [0; 128]) {
+            if let Ok(relay) = postcard::from_bytes(bytes.unwrap_or(&[0, 0])) {
+                return relay;
             }
-            Err(_) => {
-                return Relay::new(number);
-            }
-        };
-        // return Relay::new(number);
+        }
+        Relay::new(number)
     }
 
     fn get_pin_i32(&self) -> i32 {
@@ -152,19 +143,10 @@ impl Relay {
         let mut nsv_ds: nvs::EspNvs<nvs::NvsDefault> = nvs::EspNvs::new(nvs, relay.number.get_name(), true).unwrap();
 
         // if nsv_ds
-
         let key_raw_struct_data: &mut [u8] = &mut [0; 128];
 
-        match nsv_ds.get_raw(relay.number.get_name(), key_raw_struct_data) {
-            Ok(v) => {
-                if let Some(the_struct) = v {
-                    info!("{:?} = {:?}", relay.number.get_name(), postcard::from_bytes::<Relay>(the_struct));
-                    if let Ok(stored_relay) = postcard::from_bytes::<Relay>(the_struct) {
-                        relay = stored_relay;
-                    }
-                }
-            }
-            Err(e) => info!("Couldn't get key {} because {:?}", relay.number.get_name(), e),
+        if let Ok(thing) = nsv_ds.get_raw(relay.number.get_name(), key_raw_struct_data) {
+            relay = postcard::from_bytes::<Relay>(thing.unwrap_or(&[0, 0])).unwrap_or(relay);
         };
 
         info!("inside do stuff");
@@ -172,25 +154,15 @@ impl Relay {
         let pin: AnyOutputPin = unsafe { AnyOutputPin::new(relay_number) };
         let mut pindriver: PinDriver<'_, AnyOutputPin, esp_idf_hal::gpio::Output> = PinDriver::output(pin).unwrap();
         loop {
-            if let Ok(new_relay_data) = reciever_relay.try_recv() {
-                let clone_relay = new_relay_data.clone();
-                relay = new_relay_data;
-
-                info!("RECIEVED THE STRUCT {:?}", clone_relay);
-                if nsv_ds
-                    .set_raw(
-                        clone_relay.clone().number.get_name(),
-                        &postcard::to_vec::<Relay, 128>(&clone_relay).unwrap(),
-                    )
-                    .is_ok()
-                {
-                    info!("succesfully stored the struct")
-                } else {
-                    warn!("failed storing the struct")
-                };
-            } else {
-                info!("nothing to recieve yet")
-            }
+            let _ = reciever_relay.try_recv().map(|new_relay| {
+                info!("RECIEVED THE STRUCT {:?}", &new_relay);
+                let _ = nsv_ds
+                    .set_raw(new_relay.number.get_name(), &postcard::to_vec::<Relay, 128>(&new_relay).unwrap())
+                    .inspect_err(|&err| {
+                        error!("failed_storing_the_struct {} ", err);
+                    });
+                new_relay
+            });
 
             std::thread::sleep(Duration::from_secs(20));
             let time_zone = chrono_tz::Europe::Amsterdam;
@@ -200,23 +172,19 @@ impl Relay {
                 minute: time_now.minute().try_into().unwrap(),
                 second: time_now.second().try_into().unwrap(),
             };
-            info!("debug data: {:?}", relay);
             let current_month = time_now.month();
             if !relay.operating_months.is_current_month(current_month) {
                 let _ = pindriver.set_low();
                 continue;
             }
-            info!("passes month");
 
-            let day = time_now.weekday().num_days_from_monday();
-            info!("the current day in u32 : {}", day);
-            info!("days_off_the_week.is_current_day(day) : {}", relay.days_off_the_week.is_current_day(day));
-            if !relay.days_off_the_week.is_current_day(day) {
+            let current_day = time_now.weekday().num_days_from_monday();
+
+            if !relay.days_off_the_week.is_current_day(current_day) {
                 info!("pin set low");
                 let _ = pindriver.set_low();
                 continue;
             }
-            info!("passes day");
 
             if let Some(exclude_times) = &relay.exclude_times {
                 if !exclude_times.on_or_off(current_time) {
@@ -224,7 +192,6 @@ impl Relay {
                     continue;
                 }
             }
-            info!("passes exclude");
 
             if relay.condition.on_or_off(current_time) {
                 info!("pin high");
@@ -238,7 +205,7 @@ impl Relay {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
-struct Month {
+struct Month_depricated {
     jan: bool,
     feb: bool,
     mar: bool,
@@ -253,9 +220,9 @@ struct Month {
     dec: bool,
 }
 
-impl Month {
+impl Month_depricated {
     fn all() -> Self {
-        Month {
+        Month_depricated {
             jan: true,
             feb: true,
             mar: true,
@@ -290,7 +257,85 @@ impl Month {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
-struct DaysOffTheWeek {
+pub struct Month {
+    months: u16,
+}
+impl Month {
+    pub fn all() -> Self {
+        Month { months: 0b00001111_11111111 }
+    }
+
+    pub fn is_current_month(&self, other_month: u32) -> bool {
+        let other_month = Month::months_to_mask(other_month);
+        (other_month & self.months) != 0
+    }
+
+    ///where january is 1
+    pub fn months_to_mask(month: u32) -> u16 {
+        let month: u16 = month.try_into().unwrap_or(0);
+        match month {
+            1 => 0b00000000_00000001,  //jan
+            2 => 0b00000000_00000010,  //feb
+            3 => 0b00000000_00000100,  //mar
+            4 => 0b00000000_00001000,  //apr
+            5 => 0b00000000_00010000,  //may
+            6 => 0b00000000_00100000,  //jun
+            7 => 0b00000000_01000000,  //jul
+            8 => 0b00000000_10000000,  //aug
+            9 => 0b00000001_00000000,  //sept
+            10 => 0b00000010_00000000, //okt
+            11 => 0b00000100_00000000, //nov
+            12 => 0b00001000_00000000, //dec
+            // 0 => 0b01000000, //sunday
+            _ => {
+                println!("day: {} doesn't exist", month);
+                0b00000000
+            } //unknown day
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct DaysOffTheWeek {
+    pub days: u8,
+}
+impl DaysOffTheWeek {
+    pub fn all() -> Self {
+        DaysOffTheWeek { days: u8::MAX }
+    }
+
+    pub fn days_to_struct(days: Vec<u8>) -> DaysOffTheWeek {
+        let mut mask = 0;
+        for day in days {
+            mask |= DaysOffTheWeek::day_to_mask(day.into());
+        }
+        DaysOffTheWeek { days: mask }
+    }
+
+    pub fn day_to_mask(day: u32) -> u8 {
+        let day: u8 = day.try_into().unwrap_or(0);
+        match day {
+            1 => 0b00000001, //monday
+            2 => 0b00000010, //tuesday
+            3 => 0b00000100, //wednesday
+            4 => 0b00001000, //thursday
+            5 => 0b00010000, //friday
+            6 => 0b00100000, //saturday
+            0 => 0b01000000, //sunday
+            _ => {
+                println!("day: {} doesn't exist", day);
+                0b00000000
+            } //unknown day
+        }
+    }
+
+    pub fn is_current_day(&self, other_day: u32) -> bool {
+        // let other_day: u8 = other_day.try_into().unwrap_or(0);
+        let other_day = DaysOffTheWeek::day_to_mask(other_day);
+        (other_day & self.days) != 0
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+struct DaysOffTheWeek_depricated {
     mon: bool,
     tue: bool,
     wed: bool,
@@ -300,9 +345,9 @@ struct DaysOffTheWeek {
     sun: bool,
 }
 
-impl DaysOffTheWeek {
+impl DaysOffTheWeek_depricated {
     fn all() -> Self {
-        DaysOffTheWeek {
+        DaysOffTheWeek_depricated {
             mon: true,
             tue: true,
             wed: true,
