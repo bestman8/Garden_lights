@@ -1,14 +1,12 @@
 use esp_idf_svc::{mqtt::client::*, sys::EspError};
 
 use crate::relay::Relay;
-use crate::{relay, sensor, CONFIG};
+use crate::{relay, CONFIG};
 use core::time::Duration;
 use esp_idf_hal::{
     self,
     adc::oneshot::{config, AdcChannelDriver, AdcDriver},
 };
-use esp_idf_svc::mqtt::client::*;
-use esp_idf_svc::timer::{EspAsyncTimer, EspTaskTimerService, EspTimerService};
 
 use log::*;
 pub fn run(
@@ -34,7 +32,7 @@ pub fn run(
                 while let Ok(event) = connection.next() {
                     info!("[Queue] Event: {}", event.payload());
                     let payload_str = format!("{}", event.payload());
-                    let data_str = if let Some(data_str) = payload_str.split("data: ").nth(1) {
+                    let data_str = if let Some(data_str) = payload_str.split("data: Ok(\"").nth(1) {
                         if let Some(data) = data_str.split(", details:").next() {
                             data
                         } else {
@@ -46,12 +44,26 @@ pub fn run(
                     println!("payload_str :{}", payload_str);
                     println!("data_str :{}", data_str);
 
-                    let data: Vec<u8> = data_str
-                        .trim_matches('[')
-                        .trim_matches(']')
-                        .split(", ")
-                        .map(|x| x.parse::<u8>().unwrap_or(0))
-                        .collect();
+                    let data = payload_str.split("data: Ok(\"").nth(1).unwrap_or_default().chars().collect::<Vec<_>>();
+                    let data = data
+                        .chunks(2)
+                        .map_while(|chars| {
+                            let (num_1, num_2) = (chars[0].to_digit(16)? as u8, chars[1].to_digit(16)? as u8);
+                            Some((num_1 << 4) | num_2)
+                        })
+                        .collect::<Vec<_>>();
+
+                    // let data: Vec<u8> = payload_str
+                    //     .trim_end_matches("]\"), details: Complete")
+                    //     .split("data: Ok(\"[")
+                    //     .nth(1)
+                    //     .unwrap_or("")
+                    //     .split(", ")
+                    //     .filter_map(|x| {
+                    //         // println!("{x}");
+                    //         x.parse::<u8>().ok()
+                    //     })
+                    //     .collect();
                     println!("{:?}", data);
 
                     // let test: Vec<u8> = event.payload().into();
@@ -105,7 +117,7 @@ pub fn run(
             .unwrap();
 
             loop {
-                let sleep_secs = 2;
+                let sleep_secs = 40;
                 client.enqueue(topic, QoS::AtLeastOnce, true, adc.read_raw(&mut adc_pin).unwrap().to_string().as_bytes())?;
 
                 info!("Now sleeping for {sleep_secs}s...");

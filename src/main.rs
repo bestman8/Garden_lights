@@ -48,7 +48,7 @@ fn main() {
     println!("something from the stack");
 
     let _sntp = esp_idf_svc::sntp::EspSntp::new_default();
-    block_on(run(nvs_clone, pins, _wifi));
+    block_on(run(nvs_clone, _wifi));
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -57,7 +57,7 @@ struct StructToBeStored<'a> {
     a_str: &'a str,
     a_number: i16,
 }
-async fn run(nvs: esp_idf_svc::nvs::EspNvsPartition<NvsDefault>, pins: Pins, wifi: AsyncWifi<EspWifi<'static>>) {
+async fn run(nvs: esp_idf_svc::nvs::EspNvsPartition<NvsDefault>, wifi: AsyncWifi<EspWifi<'static>>) {
     let (sender_relay_1, reciever_relay_1) = crossbeam::channel::bounded(5);
     let (sender_relay_2, reciever_relay_2) = crossbeam::channel::bounded(5);
     let (sender_relay_3, reciever_relay_3) = crossbeam::channel::bounded(5);
@@ -90,9 +90,9 @@ async fn run(nvs: esp_idf_svc::nvs::EspNvsPartition<NvsDefault>, pins: Pins, wif
         )
     });
 
-    mqtt_task.join();
-    wifi_task.join();
-    relay_task.join();
+    mqtt_task.join().unwrap();
+    wifi_task.join().unwrap();
+    relay_task.join().unwrap();
     panic!("this shouldn't exist restarting");
 }
 

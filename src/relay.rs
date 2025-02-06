@@ -2,7 +2,7 @@
 use chrono::{Datelike, Timelike};
 use esp_idf_hal::gpio::{AnyOutputPin, PinDriver};
 use esp_idf_svc::nvs;
-use log::{error, info, log, warn};
+use log::{error, info};
 use std::result::Result::Ok;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
@@ -42,7 +42,7 @@ impl Relays {
         let relay_2_nvs = nvs.clone();
         let relay_3_nvs = nvs.clone();
         let relay_4_nvs = nvs.clone();
-        let status__nvs = nvs.clone();
+        let status_nvs = nvs.clone();
 
         spawn(move || {
             // let shared_data_relay_1_clone = shared_data_relay_1_clone.clone();
@@ -61,7 +61,7 @@ impl Relays {
         });
 
         spawn(move || {
-            Relay::do_stuff(self.status_led, RelayNumber::StatusLed, reciever_status_led, status__nvs);
+            Relay::do_stuff(self.status_led, RelayNumber::StatusLed, reciever_status_led, status_nvs);
         });
 
         // Spawn a thread for reading and printing the state
@@ -98,7 +98,7 @@ impl Relay {
         info!("relay created");
         Relay {
             condition: Condition::Time(None),
-            number: number,
+            number,
             days_off_the_week: DaysOffTheWeek::all(),
             operating_months: Month::all(),
             exclude_times: None,
@@ -121,7 +121,7 @@ impl Relay {
         Relay::new(number)
     }
 
-    fn get_pin_i32(&self) -> i32 {
+    fn _get_pin_i32(&self) -> i32 {
         match self.number {
             RelayNumber::Relay1 => 21,
             RelayNumber::Relay2 => 19,
@@ -154,17 +154,17 @@ impl Relay {
         let pin: AnyOutputPin = unsafe { AnyOutputPin::new(relay_number) };
         let mut pindriver: PinDriver<'_, AnyOutputPin, esp_idf_hal::gpio::Output> = PinDriver::output(pin).unwrap();
         loop {
-            let _ = reciever_relay.try_recv().map(|new_relay| {
+            std::thread::sleep(Duration::from_secs(20));
+            let _ = reciever_relay.try_recv().inspect(|new_relay| {
                 info!("RECIEVED THE STRUCT {:?}", &new_relay);
                 let _ = nsv_ds
-                    .set_raw(new_relay.number.get_name(), &postcard::to_vec::<Relay, 128>(&new_relay).unwrap())
+                    .set_raw(new_relay.number.get_name(), &postcard::to_vec::<Relay, 128>(new_relay).unwrap())
                     .inspect_err(|&err| {
                         error!("failed_storing_the_struct {} ", err);
                     });
-                new_relay
+                relay = new_relay.clone();
             });
 
-            std::thread::sleep(Duration::from_secs(20));
             let time_zone = chrono_tz::Europe::Amsterdam;
             let time_now = chrono::Utc::now().with_timezone(&time_zone);
             let current_time = TimeOfDay {
@@ -187,13 +187,13 @@ impl Relay {
             }
 
             if let Some(exclude_times) = &relay.exclude_times {
-                if !exclude_times.on_or_off(current_time) {
+                if !exclude_times.on_or_off(&current_time) {
                     let _ = pindriver.set_low();
                     continue;
                 }
             }
 
-            if relay.condition.on_or_off(current_time) {
+            if relay.condition.on_or_off(&current_time) {
                 info!("pin high");
                 let _ = pindriver.set_high();
             } else {
@@ -204,58 +204,6 @@ impl Relay {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
-struct Month_depricated {
-    jan: bool,
-    feb: bool,
-    mar: bool,
-    apr: bool,
-    may: bool,
-    jun: bool,
-    jul: bool,
-    aug: bool,
-    sep: bool,
-    oct: bool,
-    nov: bool,
-    dec: bool,
-}
-
-impl Month_depricated {
-    fn all() -> Self {
-        Month_depricated {
-            jan: true,
-            feb: true,
-            mar: true,
-            apr: true,
-            may: true,
-            jun: true,
-            jul: true,
-            aug: true,
-            sep: true,
-            oct: true,
-            nov: true,
-            dec: true,
-        }
-    }
-
-    fn is_current_month(&self, current_month: u32) -> bool {
-        match current_month {
-            1 => self.jan,
-            2 => self.feb,
-            3 => self.mar,
-            4 => self.apr,
-            5 => self.may,
-            6 => self.jun,
-            7 => self.jul,
-            8 => self.aug,
-            9 => self.sep,
-            10 => self.oct,
-            11 => self.nov,
-            12 => self.dec,
-            _ => false,
-        }
-    }
-}
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Month {
     months: u16,
@@ -303,7 +251,7 @@ impl DaysOffTheWeek {
         DaysOffTheWeek { days: u8::MAX }
     }
 
-    pub fn days_to_struct(days: Vec<u8>) -> DaysOffTheWeek {
+    pub fn _days_to_struct(days: Vec<u8>) -> DaysOffTheWeek {
         let mut mask = 0;
         for day in days {
             mask |= DaysOffTheWeek::day_to_mask(day.into());
@@ -334,45 +282,8 @@ impl DaysOffTheWeek {
         (other_day & self.days) != 0
     }
 }
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
-struct DaysOffTheWeek_depricated {
-    mon: bool,
-    tue: bool,
-    wed: bool,
-    thu: bool,
-    fri: bool,
-    sat: bool,
-    sun: bool,
-}
-
-impl DaysOffTheWeek_depricated {
-    fn all() -> Self {
-        DaysOffTheWeek_depricated {
-            mon: true,
-            tue: true,
-            wed: true,
-            thu: true,
-            fri: true,
-            sat: true,
-            sun: true,
-        }
-    }
-
-    fn is_current_day(&self, other_day: u32) -> bool {
-        match other_day {
-            0 => self.sun,
-            1 => self.mon,
-            2 => self.tue,
-            3 => self.wed,
-            4 => self.thu,
-            5 => self.fri,
-            6 => self.sat,
-            _ => false,
-        }
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 struct TimeOfDay {
     hour: u8,
     minute: u8,
@@ -419,7 +330,7 @@ struct LightAmount {
     value: u32,
 }
 impl LightAmount {
-    fn on_or_off(&self, current_time: TimeOfDay) -> bool {
+    fn on_or_off(&self, _current_time: &TimeOfDay) -> bool {
         todo!()
     }
 }
@@ -437,10 +348,14 @@ enum Condition {
     LightAmountTimeLimited(LightAmount, Times),
 }
 impl Condition {
-    fn on_or_off(&self, current_time: TimeOfDay) -> bool {
+    fn on_or_off(&self, current_time: &TimeOfDay) -> bool {
         // *started = false;
         match self {
             Condition::Time(option_times) => {
+                // option_times
+                //     .clone()
+                //     .is_some_and(|times| times.is_none_or(|time| time.on_or_off(current_time)))
+
                 if let Some(times) = option_times {
                     if let Some(on_or_off) = times {
                         on_or_off.on_or_off(current_time)
@@ -463,7 +378,7 @@ struct Times {
     end_time: TimeOfDay,
 }
 impl Times {
-    fn on_or_off(&self, current_time: TimeOfDay) -> bool {
+    fn on_or_off(&self, current_time: &TimeOfDay) -> bool {
         let mut secs_current_time = current_time.to_sec();
         let secs_time_start = self.start_time.to_sec();
         let mut secs_end_time = self.end_time.to_sec();

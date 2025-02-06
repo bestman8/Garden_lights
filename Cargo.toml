@@ -4,7 +4,6 @@ version = "0.1.0"
 authors = ["bestman8 <35968731+bestman8@users.noreply.github.com>"]
 edition = "2021"
 resolver = "2"
-rust-version = "1.77"
 
 [[bin]]
 name = "Garden_lights"
@@ -43,6 +42,7 @@ serde = "1.0.217"
 chrono-tz = "0.10.0"
 chrono = "0.4.39"
 crossbeam = "0.8.4"
+hex = "0.4.3"
 [build-dependencies]
 embuild = "0.32.0"
 cc = "=1.1.30"     # Necessary until a new version of `esp-idf-sys` is released
