@@ -4,7 +4,7 @@ mod relay;
 mod sensor;
 mod wifi;
 
-use esp_idf_hal::{gpio::*, peripherals::Peripherals, task::block_on};
+use esp_idf_hal::{peripherals::Peripherals, task::block_on};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     log::EspLogger,
@@ -37,7 +37,6 @@ fn main() {
 
     let peripherals = Peripherals::take().unwrap();
     let modem = peripherals.modem;
-    let pins = peripherals.pins;
     let timer = EspTimerService::new().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
 
@@ -58,11 +57,19 @@ struct StructToBeStored<'a> {
     a_number: i16,
 }
 async fn run(nvs: esp_idf_svc::nvs::EspNvsPartition<NvsDefault>, wifi: AsyncWifi<EspWifi<'static>>) {
-    let (sender_relay_1, reciever_relay_1) = crossbeam::channel::bounded(5);
-    let (sender_relay_2, reciever_relay_2) = crossbeam::channel::bounded(5);
-    let (sender_relay_3, reciever_relay_3) = crossbeam::channel::bounded(5);
-    let (sender_relay_4, reciever_relay_4) = crossbeam::channel::bounded(5);
-    let (sender_status_led, reciever_status_led) = crossbeam::channel::bounded(5);
+    let (
+        (sender_relay_1, reciever_relay_1),
+        (sender_relay_2, reciever_relay_2),
+        (sender_relay_3, reciever_relay_3),
+        (sender_relay_4, reciever_relay_4),
+        (sender_status_led, reciever_status_led),
+    ) = (
+        crossbeam::channel::bounded(5),
+        crossbeam::channel::bounded(5),
+        crossbeam::channel::bounded(5),
+        crossbeam::channel::bounded(5),
+        crossbeam::channel::bounded(5),
+    );
     let wifi_task = std::thread::spawn(|| esp_idf_hal::task::block_on(async_wifi_task(wifi)));
     let (mut client, mut conn) = mqtt::mqtt_create(CONFIG.mqtt_url, CONFIG.mqtt_client_id).unwrap();
     let mqtt_task = std::thread::spawn(move || {
@@ -82,11 +89,13 @@ async fn run(nvs: esp_idf_svc::nvs::EspNvsPartition<NvsDefault>, wifi: AsyncWifi
     let relay_task = std::thread::spawn(|| {
         relay::relay_controller_func(
             nvs,
-            reciever_relay_1,
-            reciever_relay_2,
-            reciever_relay_3,
-            reciever_relay_4,
-            reciever_status_led,
+            (
+                reciever_relay_1,
+                reciever_relay_2,
+                reciever_relay_3,
+                reciever_relay_4,
+                reciever_status_led,
+            ),
         )
     });
 

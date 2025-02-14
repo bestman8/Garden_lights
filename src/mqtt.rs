@@ -32,17 +32,8 @@ pub fn run(
                 while let Ok(event) = connection.next() {
                     info!("[Queue] Event: {}", event.payload());
                     let payload_str = format!("{}", event.payload());
-                    let data_str = if let Some(data_str) = payload_str.split("data: Ok(\"").nth(1) {
-                        if let Some(data) = data_str.split(", details:").next() {
-                            data
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    };
+
                     println!("payload_str :{}", payload_str);
-                    println!("data_str :{}", data_str);
 
                     let data = payload_str.split("data: Ok(\"").nth(1).unwrap_or_default().chars().collect::<Vec<_>>();
                     let data = data
@@ -53,21 +44,8 @@ pub fn run(
                         })
                         .collect::<Vec<_>>();
 
-                    // let data: Vec<u8> = payload_str
-                    //     .trim_end_matches("]\"), details: Complete")
-                    //     .split("data: Ok(\"[")
-                    //     .nth(1)
-                    //     .unwrap_or("")
-                    //     .split(", ")
-                    //     .filter_map(|x| {
-                    //         // println!("{x}");
-                    //         x.parse::<u8>().ok()
-                    //     })
-                    //     .collect();
                     println!("{:?}", data);
 
-                    // let test: Vec<u8> = event.payload().into();
-                    // info!("{:?}", event.payload().to_string().as_mut_vec());
                     if let Ok(relay_struct) = postcard::from_bytes::<Relay>(&data) {
                         println!("\n{:?}\n", relay_struct);
                         match relay_struct.number {
@@ -79,9 +57,6 @@ pub fn run(
                         };
 
                         info!("as been sent to channel")
-                        // if esp_idf_hal::task::block_on(sender.send(relay_struct)).is_ok() {
-                        //     info!("sent to channel")
-                        // };
                     } else {
                         error!("cannot parse struct");
                     }
